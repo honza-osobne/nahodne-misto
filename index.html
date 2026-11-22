@@ -38,11 +38,13 @@
     <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
     <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
 
+    <!-- Earcut pro rychlou triangulaci složitých a velkých polygonů -->
+    <script src="https://unpkg.com/earcut@2.2.4/dist/earcut.min.js"></script>
+
     <!-- QRious pro rychlé a spolehlivé generování QR kódů na Canvas -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrious/4.0.2/qrious.min.js"></script>
 
     <style>
-        /* Základní reset a proměnné */
         :root {
             --panel-bg: rgba(255, 255, 255, 0.97);
             --accent: #16a34a;
@@ -69,7 +71,6 @@
             z-index: 1;
         }
 
-        /* Vlastní styl pro MapLibre ovládací prvky */
         .maplibregl-ctrl-top-right {
             top: 12px;
             right: 12px;
@@ -98,7 +99,6 @@
             100% { transform: translateY(0) scale(1); opacity: 1; }
         }
 
-        /* Pulse efekt pod špendlíkem */
         .target-pulse {
             position: absolute;
             bottom: -4px;
@@ -115,7 +115,48 @@
             100% { transform: scale(2.6); opacity: 0; }
         }
 
-        /* Skrytí scrollbaru uvnitř panelu, ale zachování scrollování */
+        /* Editační body polygonu */
+        .poly-vertex-handle {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: #ffffff;
+            border: 3px solid #16a34a;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+            cursor: grab;
+            transition: transform 0.1s, border-color 0.15s;
+        }
+        .poly-vertex-handle:hover,
+        .poly-vertex-handle.selected {
+            transform: scale(1.25);
+            border-color: #dc2626;
+            background: #fef2f2;
+        }
+        .poly-vertex-handle:active {
+            cursor: grabbing;
+        }
+
+        .poly-midpoint-handle {
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            background: rgba(22, 163, 74, 0.85);
+            color: #ffffff;
+            font-size: 11px;
+            font-weight: 700;
+            line-height: 14px;
+            text-align: center;
+            border: 1.5px solid #ffffff;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.25);
+            cursor: pointer;
+            opacity: 0.85;
+            transition: transform 0.1s, opacity 0.1s;
+        }
+        .poly-midpoint-handle:hover {
+            transform: scale(1.25);
+            opacity: 1;
+        }
+
         .custom-scroll::-webkit-scrollbar {
             width: 6px;
         }
@@ -147,15 +188,15 @@
 
         @media (min-width: 768px) {
             #map {
-                left: 400px;
-                width: calc(100% - 400px);
+                left: 410px;
+                width: calc(100% - 410px);
             }
             #control-panel {
                 position: fixed;
                 top: 0;
                 bottom: 0;
                 left: 0;
-                width: 400px;
+                width: 410px;
                 z-index: 20;
                 border-right: 1px solid #e5e7eb;
             }
@@ -164,38 +205,51 @@
 </head>
 <body class="bg-slate-100 text-slate-800 antialiased select-none md:select-auto">
 
-    <!-- Horní plovoucí lišta na mapě (přepínač mapového podkladu + indikátor kreslení) -->
-    <div id="map-overlays" class="fixed top-3 left-3 md:left-[416px] right-14 z-10 flex flex-wrap items-center gap-2 pointer-events-none">
+    <!-- Horní plovoucí lišta na mapě (přepínač mapového podkladu + indikátory kreslení/editace) -->
+    <div id="map-overlays" class="fixed top-3 left-3 md:left-[426px] right-14 z-10 flex flex-col items-start gap-2 pointer-events-none">
         <!-- Přepínač mapových podkladů -->
-        <div class="pointer-events-auto inline-flex bg-white/95 backdrop-blur shadow-md rounded-xl p-1 border border-slate-200/80">
-            <button id="btn-layer-osm" onclick="setBaseLayer('osm')" class="px-3 py-1.5 text-xs font-semibold rounded-lg transition bg-brand-600 text-white shadow-sm">
-                Základní (OSM)
+        <div class="pointer-events-auto inline-flex flex-wrap bg-white/95 backdrop-blur shadow-md rounded-xl p-1 border border-slate-200/80 gap-0.5">
+            <button id="btn-layer-vector" onclick="setBaseLayer('vector')" class="px-2.5 sm:px-3 py-1.5 text-xs font-semibold rounded-lg transition bg-brand-600 text-white shadow-sm">
+                Vektorová
             </button>
-            <button id="btn-layer-topo" onclick="setBaseLayer('topo')" class="px-3 py-1.5 text-xs font-semibold rounded-lg transition text-slate-600 hover:bg-slate-100">
-                Turistická (Topo)
+            <button id="btn-layer-zabaged" onclick="setBaseLayer('zabaged')" class="px-2.5 sm:px-3 py-1.5 text-xs font-semibold rounded-lg transition text-slate-600 hover:bg-slate-100">
+                ZABAGED (ČÚZK)
+            </button>
+            <button id="btn-layer-ortofoto" onclick="setBaseLayer('ortofoto')" class="px-2.5 sm:px-3 py-1.5 text-xs font-semibold rounded-lg transition text-slate-600 hover:bg-slate-100">
+                Ortofoto ČÚZK
             </button>
         </div>
 
         <!-- Výzva při kreslení na mapě -->
-        <div id="draw-banner" class="hidden pointer-events-auto flex items-center gap-2 bg-amber-500 text-white px-3.5 py-2 rounded-xl shadow-lg text-xs sm:text-sm font-medium animate-pulse">
+        <div id="draw-banner" class="hidden pointer-events-auto flex flex-wrap items-center gap-2 bg-amber-500 text-white px-3.5 py-2 rounded-xl shadow-lg text-xs sm:text-sm font-medium">
             <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
             <span id="draw-banner-text">Táhněte prstem nebo myší po mapě...</span>
-            <button onclick="cancelDrawing()" class="ml-1 bg-amber-700/60 hover:bg-amber-700 px-2 py-0.5 rounded-lg text-xs">Zrušit</button>
+            <div id="draw-poly-actions" class="hidden flex items-center gap-1.5 ml-1">
+                <button onclick="undoPolygonDrawPoint()" class="bg-amber-700/60 hover:bg-amber-700 px-2 py-1 rounded-lg text-xs">Zpět</button>
+                <button id="btn-finish-poly" onclick="finishPolygonDrawing()" class="bg-emerald-600 hover:bg-emerald-700 px-2.5 py-1 rounded-lg text-xs font-bold disabled:opacity-50" disabled>Dokončit (0)</button>
+            </div>
+            <button onclick="cancelDrawing()" class="ml-1 bg-amber-800/60 hover:bg-amber-800 px-2 py-1 rounded-lg text-xs">Zrušit</button>
+        </div>
+
+        <!-- Výzva při editaci vrcholů polygonu -->
+        <div id="edit-poly-banner" class="hidden pointer-events-auto flex flex-wrap items-center gap-2 bg-slate-900 text-white px-3.5 py-2 rounded-xl shadow-lg text-xs font-medium">
+            <span>Táhněte vrcholy, <strong class="text-brand-400">+</strong> přidá bod.</span>
+            <button id="btn-delete-vertex" onclick="deleteSelectedVertex()" class="hidden bg-red-600 hover:bg-red-700 px-2.5 py-1 rounded-lg text-xs font-semibold">Smazat vybraný bod</button>
+            <button onclick="stopPolygonEditMode()" class="bg-brand-600 hover:bg-brand-700 px-2.5 py-1 rounded-lg text-xs font-bold">Hotovo</button>
         </div>
     </div>
 
     <!-- Kontejner pro MapLibre GL JS -->
     <div id="map"></div>
 
-    <!-- Toast notifikace (náhrada za alert) -->
-    <div id="toast-container" class="fixed top-16 left-1/2 -translate-x-1/2 md:left-[calc(50%+200px)] z-50 flex flex-col gap-2 pointer-events-none w-11/12 max-w-sm"></div>
+    <!-- Toast notifikace -->
+    <div id="toast-container" class="fixed top-16 left-1/2 -translate-x-1/2 md:left-[calc(50%+205px)] z-50 flex flex-col gap-2 pointer-events-none w-11/12 max-w-sm"></div>
 
     <!-- Hlavní ovládací panel (Sidebar na desktopu, Bottom Sheet na mobilu) -->
     <aside id="control-panel" class="bg-white/95 backdrop-blur-md shadow-2xl flex flex-col">
         
         <!-- Úchyt pro vysunutí/zasunutí na mobilu + Hlavička -->
         <div id="mobile-sheet-header" class="px-4 pt-2.5 pb-2 border-b border-slate-200/80 cursor-pointer md:cursor-default shrink-0" onclick="toggleMobileSheet(event)">
-            <!-- Táhlo pro mobil -->
             <div class="w-10 h-1.5 bg-slate-300 rounded-full mx-auto mb-2 md:hidden"></div>
             
             <div class="flex items-center justify-between gap-2">
@@ -222,20 +276,31 @@
             </div>
         </div>
 
-        <!-- Navigační záložky -->
-        <nav class="grid grid-cols-3 gap-1 p-2 bg-slate-100/80 border-b border-slate-200/80 shrink-0">
-            <button id="tab-btn-generator" onclick="switchTab('generator')" class="tab-btn min-h-[42px] rounded-xl text-xs sm:text-sm font-semibold transition flex items-center justify-center gap-1.5 bg-white text-brand-700 shadow-sm">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.828 14.828a4 4 0 01-5.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+        <!-- Navigační záložky (4 záložky) -->
+        <nav class="grid grid-cols-4 gap-1 p-1.5 bg-slate-100/80 border-b border-slate-200/80 shrink-0">
+            <button id="tab-btn-generator" onclick="switchTab('generator')" class="tab-btn min-h-[42px] rounded-xl text-[11px] sm:text-xs font-semibold transition flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-1 bg-white text-brand-700 shadow-sm px-1">
+                <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.828 14.828a4 4 0 01-5.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
                 <span>Generátor</span>
             </button>
-            <button id="tab-btn-area" onclick="switchTab('area')" class="tab-btn min-h-[42px] rounded-xl text-xs sm:text-sm font-semibold transition flex items-center justify-center gap-1.5 text-slate-600 hover:text-slate-900">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"></path></svg>
+            <button id="tab-btn-area" onclick="switchTab('area')" class="tab-btn min-h-[42px] rounded-xl text-[11px] sm:text-xs font-semibold transition flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-1 text-slate-600 hover:text-slate-900 px-1">
+                <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"></path></svg>
                 <span>Oblast</span>
             </button>
-            <button id="tab-btn-saved" onclick="switchTab('saved')" class="tab-btn min-h-[42px] rounded-xl text-xs sm:text-sm font-semibold transition flex items-center justify-center gap-1.5 text-slate-600 hover:text-slate-900">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z"></path></svg>
-                <span>Uložené</span>
-                <span id="saved-count-badge" class="bg-slate-200 text-slate-700 text-[10px] px-1.5 py-0.5 rounded-full">2</span>
+            <button id="tab-btn-saved" onclick="switchTab('saved')" class="tab-btn min-h-[42px] rounded-xl text-[11px] sm:text-xs font-semibold transition flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-1 text-slate-600 hover:text-slate-900 px-1">
+                <div class="flex items-center gap-1">
+                    <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z"></path></svg>
+                    <span class="hidden sm:inline">Uložené</span>
+                    <span id="saved-count-badge" class="bg-slate-200 text-slate-700 text-[10px] px-1.5 py-0.2 rounded-full">2</span>
+                </div>
+                <span class="sm:hidden">Uložené</span>
+            </button>
+            <button id="tab-btn-history" onclick="switchTab('history')" class="tab-btn min-h-[42px] rounded-xl text-[11px] sm:text-xs font-semibold transition flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-1 text-slate-600 hover:text-slate-900 px-1">
+                <div class="flex items-center gap-1">
+                    <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                    <span class="hidden sm:inline">Historie</span>
+                    <span id="history-count-badge" class="bg-slate-200 text-slate-700 text-[10px] px-1.5 py-0.2 rounded-full">0</span>
+                </div>
+                <span class="sm:hidden">Historie</span>
             </button>
         </nav>
 
@@ -319,14 +384,18 @@
                 <!-- Výběr tvaru oblasti -->
                 <div>
                     <label class="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">1. Typ oblasti</label>
-                    <div class="grid grid-cols-2 gap-2">
-                        <button id="shape-btn-rect" onclick="setAreaShape('rectangle')" class="min-h-[46px] rounded-xl border-2 border-brand-600 bg-brand-50/70 text-brand-800 font-semibold text-sm flex items-center justify-center gap-2 transition">
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2" stroke-width="2"></rect></svg>
+                    <div class="grid grid-cols-3 gap-2">
+                        <button id="shape-btn-rect" onclick="setAreaShape('rectangle')" class="min-h-[46px] rounded-xl border-2 border-brand-600 bg-brand-50/70 text-brand-800 font-semibold text-xs sm:text-sm flex items-center justify-center gap-1.5 transition">
+                            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2" stroke-width="2"></rect></svg>
                             <span>Obdélník</span>
                         </button>
-                        <button id="shape-btn-circle" onclick="setAreaShape('circle')" class="min-h-[46px] rounded-xl border-2 border-slate-200 bg-white text-slate-600 hover:bg-slate-50 font-semibold text-sm flex items-center justify-center gap-2 transition">
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" stroke-width="2"></circle></svg>
+                        <button id="shape-btn-circle" onclick="setAreaShape('circle')" class="min-h-[46px] rounded-xl border-2 border-slate-200 bg-white text-slate-600 hover:bg-slate-50 font-semibold text-xs sm:text-sm flex items-center justify-center gap-1.5 transition">
+                            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" stroke-width="2"></circle></svg>
                             <span>Kruh</span>
+                        </button>
+                        <button id="shape-btn-polygon" onclick="setAreaShape('polygon')" class="min-h-[46px] rounded-xl border-2 border-slate-200 bg-white text-slate-600 hover:bg-slate-50 font-semibold text-xs sm:text-sm flex items-center justify-center gap-1.5 transition">
+                            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3l8 6-3 10H7L4 9l8-6z"></path></svg>
+                            <span>Polygon</span>
                         </button>
                     </div>
                 </div>
@@ -404,11 +473,37 @@
                     </div>
                 </div>
 
+                <!-- Formulář pro POLYGON -->
+                <div id="form-polygon" class="hidden bg-slate-50 border border-slate-200 rounded-2xl p-3.5 space-y-3">
+                    <div class="flex items-center justify-between gap-2">
+                        <span class="text-xs font-bold text-slate-700">Parametry polygonu</span>
+                        <span id="poly-stats-badge" class="text-[11px] font-semibold bg-white border border-slate-200 text-slate-600 px-2 py-0.5 rounded-lg">0 bodů</span>
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-2">
+                        <button id="btn-edit-poly-vertices" onclick="togglePolygonEditMode()" class="min-h-[42px] px-3 bg-white hover:bg-slate-100 border border-slate-300 rounded-xl text-xs font-semibold text-slate-700 flex items-center justify-center gap-1.5 transition">
+                            <svg class="w-4 h-4 text-brand-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
+                            <span>Upravit body</span>
+                        </button>
+                        <button onclick="openPolyImportModal()" class="min-h-[42px] px-3 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition">
+                            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+                            <span>Vložit z textu</span>
+                        </button>
+                    </div>
+
+                    <div class="flex items-center justify-between pt-1 border-t border-slate-200/80">
+                        <span class="text-[11px] text-slate-500">Podporuje GeoJSON, WKT i seznamy bodů.</span>
+                        <button onclick="copyPolygonGeoJSON()" class="text-[11px] font-semibold text-brand-600 hover:text-brand-700 underline shrink-0">
+                            Kopírovat GeoJSON
+                        </button>
+                    </div>
+                </div>
+
                 <!-- Uložení pojmenované oblasti -->
                 <div class="bg-white border border-slate-200 rounded-2xl p-3.5 space-y-2.5 shadow-xs">
                     <label for="input-save-name" class="block text-xs font-bold text-slate-700">Uložit oblast pod názvem</label>
                     <div class="flex gap-2">
-                        <input id="input-save-name" type="text" placeholder="Např. Kokořínsko, Okolí chaty..." class="flex-1 min-h-[44px] px-3 text-sm bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none">
+                        <input id="input-save-name" type="text" placeholder="Např. Kokořínsko, Hranice obce..." class="flex-1 min-h-[44px] px-3 text-sm bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none">
                         <button onclick="saveCurrentArea()" class="min-h-[44px] px-4 bg-slate-900 hover:bg-slate-800 active:scale-95 text-white text-sm font-semibold rounded-xl transition shrink-0">
                             Uložit
                         </button>
@@ -421,9 +516,7 @@
             <section id="tab-saved" class="hidden space-y-4">
                 
                 <!-- Seznam uložených oblastí -->
-                <div id="saved-areas-list" class="space-y-2.5">
-                    <!-- Dynamicky generováno pomocí JS -->
-                </div>
+                <div id="saved-areas-list" class="space-y-2.5"></div>
 
                 <!-- Export a Import JSON -->
                 <div class="pt-3 border-t border-slate-200">
@@ -443,10 +536,25 @@
 
             </section>
 
+            <!-- ================= ZÁLOŽKA 4: HISTORIE ================= -->
+            <section id="tab-history" class="hidden space-y-3.5">
+                <div class="bg-slate-50 border border-slate-200 rounded-2xl p-3 flex items-center justify-between gap-2">
+                    <label class="flex items-center gap-2 text-xs font-semibold text-slate-700 cursor-pointer">
+                        <input id="toggle-history-map" type="checkbox" checked class="w-4 h-4 accent-brand-600 rounded" onchange="updateHistoryOnMap()">
+                        <span>Zobrazit body historie na mapě</span>
+                    </label>
+                    <button id="btn-clear-history" onclick="requestClearAllHistory()" class="min-h-[34px] px-2.5 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded-xl text-xs font-semibold transition disabled:opacity-40 disabled:pointer-events-none">
+                        Smazat vše
+                    </button>
+                </div>
+
+                <div id="history-list" class="space-y-2"></div>
+            </section>
+
         </div>
     </aside>
 
-    <!-- Modální okno pro přejmenování oblasti (náhrada za prompt) -->
+    <!-- Modální okno pro přejmenování oblasti -->
     <div id="rename-modal" class="hidden fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
         <div class="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-5 space-y-4">
             <h3 class="text-base font-bold text-slate-900">Přejmenovat oblast</h3>
@@ -458,6 +566,69 @@
         </div>
     </div>
 
+    <!-- Modální okno pro potvrzení smazání -->
+    <div id="confirm-modal" class="hidden fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-5 space-y-4">
+            <div class="flex items-start gap-3">
+                <div class="w-10 h-10 rounded-xl bg-red-100 text-red-600 flex items-center justify-center shrink-0">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                </div>
+                <div>
+                    <h3 id="confirm-modal-title" class="text-base font-bold text-slate-900">Potvrdit smazání</h3>
+                    <p id="confirm-modal-message" class="text-xs sm:text-sm text-slate-600 mt-1"></p>
+                </div>
+            </div>
+            <div class="flex justify-end gap-2">
+                <button onclick="closeConfirmModal()" class="min-h-[40px] px-4 rounded-xl text-sm font-medium text-slate-600 hover:bg-slate-100">Zrušit</button>
+                <button onclick="executeConfirmModal()" class="min-h-[40px] px-4 rounded-xl text-sm font-semibold bg-red-600 hover:bg-red-700 text-white">Smazat</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modální okno pro textový import polygonu -->
+    <div id="poly-import-modal" class="hidden fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-lg w-full p-5 space-y-3.5 max-h-[90vh] flex flex-col">
+            <div class="flex items-center justify-between">
+                <h3 class="text-base font-bold text-slate-900">Import polygonu z textu</h3>
+                <button onclick="closePolyImportModal()" class="w-8 h-8 rounded-lg hover:bg-slate-100 flex items-center justify-center text-slate-500">✕</button>
+            </div>
+
+            <p class="text-xs text-slate-500">
+                Vložte <strong>GeoJSON</strong> (Polygon, MultiPolygon, FeatureCollection), <strong>WKT</strong> (<code>POLYGON((...))</code>), nebo seznam souřadnic na řádcích (i pro desítky tisíc bodů).
+            </p>
+
+            <div class="flex flex-wrap items-center justify-between gap-2 bg-slate-50 p-2.5 rounded-xl border border-slate-200">
+                <div class="flex items-center gap-2 text-xs">
+                    <span class="font-semibold text-slate-600">Pořadí prostého textu:</span>
+                    <select id="poly-import-order" class="bg-white border border-slate-300 rounded-lg px-2 py-1 text-xs font-medium outline-none" onchange="previewImportedPolygon()">
+                        <option value="latlon" selected>Lat, Lon (GPS / Mapy)</option>
+                        <option value="lonlat">Lon, Lat (GeoJSON / WKT)</option>
+                    </select>
+                </div>
+                <label class="text-xs font-semibold text-brand-700 hover:text-brand-800 cursor-pointer underline">
+                    Načíst ze souboru
+                    <input type="file" accept=".json,.geojson,.txt,.wkt,.csv" class="hidden" onchange="loadPolyFileToTextarea(event)">
+                </label>
+            </div>
+
+            <textarea id="poly-import-textarea" rows="7" oninput="previewImportedPolygon()" placeholder='Např.:
+50.0812, 14.4125
+50.0921, 14.4310
+50.0750, 14.4420
+
+nebo GeoJSON / WKT POLYGON((14.41 50.08, ...))' class="w-full flex-1 min-h-[140px] p-3 text-xs font-mono bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:ring-2 focus:ring-brand-500 outline-none resize-y"></textarea>
+
+            <div id="poly-import-preview" class="text-xs px-3 py-2 rounded-xl bg-slate-100 text-slate-600 font-medium">
+                Zadejte nebo vložte data pro náhled...
+            </div>
+
+            <div class="flex justify-end gap-2 pt-1">
+                <button onclick="closePolyImportModal()" class="min-h-[42px] px-4 rounded-xl text-sm font-medium text-slate-600 hover:bg-slate-100">Zrušit</button>
+                <button id="btn-apply-poly-import" onclick="applyImportedPolygon()" disabled class="min-h-[42px] px-4 rounded-xl text-sm font-semibold bg-brand-600 hover:bg-brand-700 text-white disabled:opacity-40 disabled:pointer-events-none">Použít polygon</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         /**
          * ============================================================================
@@ -465,43 +636,378 @@
          * ============================================================================
          */
         const STORAGE_KEY = 'mapy_random_areas_v1';
-        const EARTH_RADIUS_M = 6371008.8; // Střední poloměr Země v metrech (WGS84)
+        const HISTORY_STORAGE_KEY = 'mapy_random_history_v1';
+        const EARTH_RADIUS_M = 6371008.8;
+        const MAX_EDITABLE_VERTICES = 200;
 
-        // Výchozí ukázkové oblasti při prvním spuštění
         const DEFAULT_AREAS = [
             {
-                id: 'default-praha',
-                name: 'Praha - centrum',
+                id: 'default-praha-o',
+                name: 'Praha (obdélník)',
                 type: 'rectangle',
-                minLat: 50.0680,
-                maxLat: 50.1020,
-                minLon: 14.3950,
-                maxLon: 14.4550
+                minLat: 49.98974,
+                maxLat: 50.15665,
+                minLon: 14.2932,
+                maxLon: 14.65849
             },
             {
-                id: 'default-sumava',
-                name: 'Šumava - okolí Kvildy',
-                type: 'circle',
-                centerLat: 49.0192,
-                centerLon: 13.5794,
-                radiusMeters: 4500 // 4.5 km
+                id: 'default-praha',
+                name: 'Praha (přibližně)',
+                type: 'polygon',
+                coordinates: [
+                    [50.073820,14.280300],
+                    [50.074620,14.282700],
+                    [50.101740,14.252060],
+                    [50.102500,14.246240],
+                    [50.100650,14.236350],
+                    [50.100050,14.225580],
+                    [50.101820,14.224420],
+                    [50.103790,14.223650],
+                    [50.107130,14.233900],
+                    [50.112070,14.237620],
+                    [50.111150,14.247960],
+                    [50.115090,14.256800],
+                    [50.114370,14.261310],
+                    [50.119560,14.278690],
+                    [50.115980,14.286900],
+                    [50.118460,14.291820],
+                    [50.120920,14.296630],
+                    [50.124590,14.293340],
+                    [50.130450,14.302400],
+                    [50.130400,14.305810],
+                    [50.128800,14.316170],
+                    [50.115600,14.321240],
+                    [50.117060,14.327590],
+                    [50.117320,14.339050],
+                    [50.116450,14.360010],
+                    [50.120060,14.358230],
+                    [50.124750,14.354900],
+                    [50.137860,14.353980],
+                    [50.141250,14.355550],
+                    [50.146660,14.361580],
+                    [50.148220,14.366020],
+                    [50.148270,14.371810],
+                    [50.147250,14.384940],
+                    [50.142240,14.395180],
+                    [50.143600,14.396660],
+                    [50.148250,14.399880],
+                    [50.148290,14.413890],
+                    [50.149810,14.420350],
+                    [50.153220,14.419750],
+                    [50.154560,14.428480],
+                    [50.157680,14.427560],
+                    [50.159190,14.436140],
+                    [50.157680,14.436850],
+                    [50.158540,14.452000],
+                    [50.160070,14.463630],
+                    [50.165080,14.463330],
+                    [50.165850,14.465600],
+                    [50.170050,14.466380],
+                    [50.170300,14.478780],
+                    [50.173050,14.478690],
+                    [50.172010,14.506330],
+                    [50.174260,14.508560],
+                    [50.175180,14.516390],
+                    [50.174840,14.516760],
+                    [50.175280,14.518710],
+                    [50.174950,14.518990],
+                    [50.176610,14.526350],
+                    [50.177560,14.526780],
+                    [50.177340,14.532810],
+                    [50.166690,14.532980],
+                    [50.162080,14.534220],
+                    [50.165040,14.539780],
+                    [50.165260,14.540640],
+                    [50.163150,14.542550],
+                    [50.164130,14.543880],
+                    [50.166550,14.550490],
+                    [50.161990,14.561260],
+                    [50.156030,14.563210],
+                    [50.155130,14.561280],
+                    [50.150620,14.563450],
+                    [50.151960,14.565980],
+                    [50.150220,14.573060],
+                    [50.150880,14.578310],
+                    [50.150320,14.578610],
+                    [50.151430,14.581520],
+                    [50.153020,14.583870],
+                    [50.153750,14.584230],
+                    [50.154170,14.587250],
+                    [50.154430,14.589400],
+                    [50.153960,14.594100],
+                    [50.154290,14.599240],
+                    [50.153840,14.599140],
+                    [50.147600,14.593320],
+                    [50.145290,14.587900],
+                    [50.144090,14.588960],
+                    [50.142800,14.591710],
+                    [50.139750,14.590080],
+                    [50.139220,14.592850],
+                    [50.133010,14.596330],
+                    [50.129380,14.601210],
+                    [50.127940,14.607870],
+                    [50.127250,14.608630],
+                    [50.129660,14.620630],
+                    [50.127950,14.621700],
+                    [50.130080,14.632510],
+                    [50.128890,14.633960],
+                    [50.127140,14.635500],
+                    [50.124110,14.635610],
+                    [50.124310,14.639610],
+                    [50.123650,14.640960],
+                    [50.124290,14.647580],
+                    [50.123520,14.653040],
+                    [50.122720,14.659300],
+                    [50.120730,14.659730],
+                    [50.117800,14.659110],
+                    [50.109890,14.656870],
+                    [50.106630,14.657610],
+                    [50.106580,14.660860],
+                    [50.105230,14.661650],
+                    [50.103540,14.665210],
+                    [50.104070,14.668490],
+                    [50.102940,14.672800],
+                    [50.101860,14.676250],
+                    [50.101510,14.680160],
+                    [50.100980,14.686650],
+                    [50.100780,14.689990],
+                    [50.100620,14.690490],
+                    [50.099920,14.691250],
+                    [50.098800,14.688810],
+                    [50.096380,14.688880],
+                    [50.095530,14.692870],
+                    [50.094280,14.696620],
+                    [50.091760,14.704580],
+                    [50.090290,14.705850],
+                    [50.087060,14.706950],
+                    [50.082030,14.704990],
+                    [50.076410,14.702810],
+                    [50.076160,14.701870],
+                    [50.071970,14.700170],
+                    [50.071820,14.696980],
+                    [50.071750,14.694490],
+                    [50.071910,14.690890],
+                    [50.071130,14.689310],
+                    [50.069420,14.683540],
+                    [50.065660,14.670340],
+                    [50.063600,14.667110],
+                    [50.061970,14.659000],
+                    [50.061070,14.659070],
+                    [50.060640,14.652270],
+                    [50.059450,14.652310],
+                    [50.058670,14.646170],
+                    [50.057150,14.642520],
+                    [50.056790,14.640430],
+                    [50.054860,14.641490],
+                    [50.048470,14.641280],
+                    [50.043580,14.644360],
+                    [50.042780,14.644760],
+                    [50.049890,14.654000],
+                    [50.046970,14.658340],
+                    [50.044630,14.661340],
+                    [50.038150,14.668210],
+                    [50.037550,14.657460],
+                    [50.030900,14.656710],
+                    [50.018870,14.670010],
+                    [50.013170,14.669130],
+                    [50.012580,14.665870],
+                    [50.008210,14.662860],
+                    [50.004180,14.657820],
+                    [50.008370,14.649900],
+                    [50.004510,14.645500],
+                    [50.005750,14.638960],
+                    [50.003310,14.641990],
+                    [49.998680,14.647500],
+                    [49.994210,14.640250],
+                    [49.995220,14.629050],
+                    [49.998370,14.622520],
+                    [49.997300,14.619070],
+                    [49.998110,14.616370],
+                    [49.998280,14.610570],
+                    [50.000100,14.608300],
+                    [50.001700,14.603580],
+                    [50.008800,14.601430],
+                    [50.006930,14.594720],
+                    [50.008430,14.588490],
+                    [50.010760,14.581350],
+                    [50.015780,14.581840],
+                    [50.011900,14.575020],
+                    [50.009010,14.572060],
+                    [50.007190,14.568320],
+                    [50.009130,14.566820],
+                    [50.009500,14.563820],
+                    [50.011420,14.562490],
+                    [50.010800,14.554870],
+                    [50.011820,14.554670],
+                    [50.009560,14.553820],
+                    [50.007570,14.550940],
+                    [50.008550,14.541650],
+                    [50.011450,14.535510],
+                    [50.010370,14.529120],
+                    [50.007560,14.521970],
+                    [50.000580,14.531290],
+                    [49.997130,14.524720],
+                    [49.996970,14.519290],
+                    [49.994840,14.519480],
+                    [49.994210,14.517880],
+                    [49.994730,14.517040],
+                    [49.994420,14.513610],
+                    [49.992360,14.513930],
+                    [49.991920,14.507810],
+                    [49.993710,14.507210],
+                    [49.993960,14.508880],
+                    [49.997270,14.507020],
+                    [49.992330,14.484210],
+                    [49.991820,14.484700],
+                    [49.990110,14.485240],
+                    [49.987590,14.484870],
+                    [49.987720,14.487170],
+                    [49.985460,14.487410],
+                    [49.983030,14.474340],
+                    [49.980270,14.474230],
+                    [49.979560,14.469510],
+                    [49.980620,14.466590],
+                    [49.972590,14.464290],
+                    [49.970410,14.462410],
+                    [49.971540,14.458200],
+                    [49.971680,14.455090],
+                    [49.971990,14.452390],
+                    [49.973240,14.449100],
+                    [49.973530,14.444620],
+                    [49.969680,14.442470],
+                    [49.967650,14.438760],
+                    [49.967100,14.433050],
+                    [49.964170,14.427840],
+                    [49.963410,14.423080],
+                    [49.963310,14.418290],
+                    [49.965580,14.411020],
+                    [49.970160,14.401170],
+                    [49.967760,14.400260],
+                    [49.961600,14.398270],
+                    [49.955530,14.395050],
+                    [49.953280,14.394640],
+                    [49.949120,14.395480],
+                    [49.944810,14.397180],
+                    [49.942560,14.396850],
+                    [49.941510,14.395310],
+                    [49.944720,14.389170],
+                    [49.949230,14.387150],
+                    [49.948690,14.379990],
+                    [49.945770,14.376770],
+                    [49.947350,14.371710],
+                    [49.949980,14.371790],
+                    [49.950680,14.368740],
+                    [49.948090,14.364990],
+                    [49.946640,14.361080],
+                    [49.946970,14.340810],
+                    [49.948220,14.337440],
+                    [49.951320,14.335720],
+                    [49.953790,14.332390],
+                    [49.955420,14.329130],
+                    [49.956040,14.326470],
+                    [49.957130,14.325140],
+                    [49.958180,14.324650],
+                    [49.959880,14.325530],
+                    [49.961530,14.326260],
+                    [49.963420,14.327070],
+                    [49.965490,14.330080],
+                    [49.967670,14.334650],
+                    [49.966810,14.338340],
+                    [49.966060,14.341470],
+                    [49.966970,14.344170],
+                    [49.968180,14.344730],
+                    [49.971250,14.345400],
+                    [49.972640,14.346210],
+                    [49.973240,14.345930],
+                    [49.974700,14.343620],
+                    [49.973040,14.337180],
+                    [49.970780,14.332070],
+                    [49.970530,14.327140],
+                    [49.971180,14.326580],
+                    [49.972640,14.326820],
+                    [49.975580,14.329390],
+                    [49.977470,14.332030],
+                    [49.980700,14.338920],
+                    [49.982610,14.336940],
+                    [49.984840,14.338450],
+                    [49.985960,14.335180],
+                    [49.986970,14.334070],
+                    [49.988620,14.334880],
+                    [49.990280,14.340380],
+                    [49.990910,14.339370],
+                    [49.993310,14.336000],
+                    [49.990830,14.326730],
+                    [49.988550,14.317820],
+                    [49.993740,14.309610],
+                    [49.995150,14.307140],
+                    [49.997190,14.305340],
+                    [49.997910,14.300040],
+                    [50.002440,14.294540],
+                    [50.004430,14.299110],
+                    [50.012220,14.300420],
+                    [50.011410,14.303710],
+                    [50.007780,14.308430],
+                    [50.007960,14.310790],
+                    [50.012760,14.312270],
+                    [50.015890,14.314430],
+                    [50.020910,14.315570],
+                    [50.023250,14.314670],
+                    [50.024450,14.300470],
+                    [50.023250,14.297850],
+                    [50.024710,14.295340],
+                    [50.026090,14.290230],
+                    [50.028920,14.285080],
+                    [50.032050,14.281070],
+                    [50.035000,14.274390],
+                    [50.039640,14.269780],
+                    [50.043650,14.267940],
+                    [50.046460,14.269930],
+                    [50.049170,14.267440],
+                    [50.049660,14.269220],
+                    [50.053690,14.270470],
+                    [50.052110,14.263940],
+                    [50.054990,14.261860],
+                    [50.054050,14.256970],
+                    [50.056890,14.254440],
+                    [50.056460,14.250210],
+                    [50.058670,14.247010],
+                    [50.062530,14.246690],
+                    [50.064780,14.257830],
+                    [50.067010,14.257890],
+                    [50.068010,14.257210],
+                    [50.072020,14.257080],
+                    [50.073410,14.269590],
+                    [50.073820,14.280300]
+                ]
             }
         ];
 
-        // Globální stav
+        // Cache pro triangulaci velkých polygonů (mimo localStorage)
+        const polygonSamplingCache = new WeakMap();
+
         let state = {
             savedAreas: [],
-            activeArea: null,       // Objekt aktuální oblasti (obdélník nebo kruh)
-            generatedPoint: null,   // { lat, lon }
+            history: [],
+            activeArea: null,
+            generatedPoint: null,
             isDrawing: false,
             drawStartLngLat: null,
+            drawPolyPoints: [],         // [ [lon, lat], ... ] během kreslení polygonu
+            drawCursorLngLat: null,     // pozice kurzoru pro náhledovou čáru
+            isEditingVertices: false,
+            selectedVertexIdx: null,
             isMobileSheetMinimized: false,
-            renameTargetId: null
+            renameTargetId: null,
+            confirmCallback: null,
+            parsedImportPoly: null
         };
 
         let map = null;
         let targetMarker = null;
+        let targetPopup = null;
         let qrInstance = null;
+        let editMarkers = [];
+        let suppressNextMapClick = false;
 
         /**
          * ============================================================================
@@ -511,9 +1017,6 @@
         const toRad = (deg) => (deg * Math.PI) / 180;
         const toDeg = (rad) => (rad * 180) / Math.PI;
 
-        /**
-         * Výpočet vzdálenosti dvou bodů na kouli (Haversine formule) v metrech
-         */
         function haversineDistance(lat1, lon1, lat2, lon2) {
             const dLat = toRad(lat2 - lat1);
             const dLon = toRad(lon2 - lon1);
@@ -524,9 +1027,6 @@
             return EARTH_RADIUS_M * c;
         }
 
-        /**
-         * Výpočet cílového bodu na sféře ze startovního bodu, azimutu (rad) a vzdálenosti (m)
-         */
         function destinationPoint(lat, lon, bearingRad, distanceMeters) {
             const angDist = distanceMeters / EARTH_RADIUS_M;
             const lat1 = toRad(lat);
@@ -542,17 +1042,10 @@
                 Math.cos(angDist) - Math.sin(lat1) * Math.sin(lat2)
             );
 
-            // Normalizace zeměpisné délky do intervalu [-180, 180]
             const normLon = ((toDeg(lon2) + 540) % 360) - 180;
-            return {
-                lat: toDeg(lat2),
-                lon: normLon
-            };
+            return { lat: toDeg(lat2), lon: normLon };
         }
 
-        /**
-         * Vytvoří GeoJSON Polygon pro kruh pomocí přesných geodetických bodů
-         */
         function createGeodesicCircleGeoJSON(centerLat, centerLon, radiusMeters, steps = 72) {
             const coordinates = [];
             for (let i = 0; i <= steps; i++) {
@@ -562,16 +1055,10 @@
             }
             return {
                 type: 'Feature',
-                geometry: {
-                    type: 'Polygon',
-                    coordinates: [coordinates]
-                }
+                geometry: { type: 'Polygon', coordinates: [coordinates] }
             };
         }
 
-        /**
-         * Vytvoří GeoJSON Polygon pro obdélník
-         */
         function createRectangleGeoJSON(minLat, maxLat, minLon, maxLon) {
             return {
                 type: 'Feature',
@@ -589,46 +1076,328 @@
         }
 
         /**
-         * Výpočet přibližné plochy oblasti v km² pro zobrazení uživateli
+         * Sjednotí reprezentaci polygonu na pole polygonových částí:
+         * vrací pole: [ [ outerRing, hole1, ... ], ... ]
+         * kde každý ring je otevřené pole [ [lon, lat], ... ]
          */
+        function getPolygonParts(area) {
+            if (!area) return [];
+            if (Array.isArray(area.multiCoordinates) && area.multiCoordinates.length > 0) {
+                return area.multiCoordinates;
+            }
+            if (Array.isArray(area.coordinates) && area.coordinates.length >= 3) {
+                const rings = [area.coordinates];
+                if (Array.isArray(area.holes)) {
+                    area.holes.forEach(h => { if (h.length >= 3) rings.push(h); });
+                }
+                return [rings];
+            }
+            return [];
+        }
+
+        function countPolygonVertices(area) {
+            const parts = getPolygonParts(area);
+            let total = 0;
+            for (let p = 0; p < parts.length; p++) {
+                for (let r = 0; r < parts[p].length; r++) {
+                    total += parts[p][r].length;
+                }
+            }
+            return total;
+        }
+
+        function closeRing(ring) {
+            if (!ring || ring.length === 0) return [];
+            const first = ring[0];
+            const last = ring[ring.length - 1];
+            if (first[0] === last[0] && first[1] === last[1]) return ring;
+            return [...ring, [first[0], first[1]]];
+        }
+
+        function createPolygonGeoJSON(area) {
+            const parts = getPolygonParts(area);
+            if (parts.length === 0) {
+                return { type: 'FeatureCollection', features: [] };
+            }
+            if (parts.length === 1) {
+                return {
+                    type: 'Feature',
+                    geometry: {
+                        type: 'Polygon',
+                        coordinates: parts[0].map(closeRing)
+                    }
+                };
+            }
+            return {
+                type: 'Feature',
+                geometry: {
+                    type: 'MultiPolygon',
+                    coordinates: parts.map(poly => poly.map(closeRing))
+                }
+            };
+        }
+
+        /**
+         * Přesný sférický výpočet plochy polygonového kruhu v m² v O(N)
+         */
+        function sphericalRingAreaM2(ring) {
+            const n = ring.length;
+            if (n < 3) return 0;
+            let total = 0;
+            for (let i = 0; i < n; i++) {
+                const p1 = ring[i];
+                const p2 = ring[(i + 1) % n];
+                let dLon = toRad(p2[0] - p1[0]);
+                if (dLon > Math.PI) dLon -= 2 * Math.PI;
+                if (dLon < -Math.PI) dLon += 2 * Math.PI;
+                total += dLon * (2 + Math.sin(toRad(p1[1])) + Math.sin(toRad(p2[1])));
+            }
+            return Math.abs(total * EARTH_RADIUS_M * EARTH_RADIUS_M / 2);
+        }
+
         function calculateAreaKm2(area) {
+            if (!area) return 0;
             if (area.type === 'circle') {
                 const rKm = area.radiusMeters / 1000;
                 return Math.PI * rKm * rKm;
-            } else {
-                const midLat = toRad((area.minLat + area.maxLat) / 2);
+            } else if (area.type === 'rectangle') {
                 const heightM = haversineDistance(area.minLat, area.minLon, area.maxLat, area.minLon);
                 const widthM = haversineDistance((area.minLat + area.maxLat) / 2, area.minLon, (area.minLat + area.maxLat) / 2, area.maxLon);
                 return (heightM * widthM) / 1_000_000;
+            } else if (area.type === 'polygon') {
+                const parts = getPolygonParts(area);
+                let totalM2 = 0;
+                for (let p = 0; p < parts.length; p++) {
+                    const rings = parts[p];
+                    if (rings.length > 0) {
+                        totalM2 += sphericalRingAreaM2(rings[0]);
+                        for (let h = 1; h < rings.length; h++) {
+                            totalM2 -= sphericalRingAreaM2(rings[h]);
+                        }
+                    }
+                }
+                return Math.max(0, totalM2 / 1_000_000);
             }
+            return 0;
         }
 
         /**
          * ============================================================================
-         * INICIALIZACE MAPY (MAPLIBRE GL JS)
+         * EFEKTIVNÍ SAMPLING NÁHODNÝCH BODŮ PRO VELKÉ POLYGONY
+         * ============================================================================
+         */
+        function buildPolygonSamplingStructure(area) {
+            if (polygonSamplingCache.has(area)) {
+                return polygonSamplingCache.get(area);
+            }
+
+            const parts = getPolygonParts(area);
+            const triangles = []; // ploché pole [ax, ay, bx, by, cx, cy, ...] v equal-area souřadnicích (radLon, sinLat)
+            const cdf = [];
+            let cumulativeArea = 0;
+
+            // 1) Triangulace pomocí Earcut v equal-area souřadnicích (lonRad, sinLat)
+            if (typeof earcut === 'function') {
+                for (let p = 0; p < parts.length; p++) {
+                    const rings = parts[p];
+                    const flat = [];
+                    const holeIndices = [];
+
+                    for (let r = 0; r < rings.length; r++) {
+                        const ring = rings[r];
+                        if (r > 0) {
+                            holeIndices.push(flat.length / 2);
+                        }
+                        for (let i = 0; i < ring.length; i++) {
+                            flat.push(toRad(ring[i][0]), Math.sin(toRad(ring[i][1])));
+                        }
+                    }
+
+                    const indices = earcut(flat, holeIndices.length > 0 ? holeIndices : undefined, 2);
+                    for (let i = 0; i < indices.length; i += 3) {
+                        const i0 = indices[i] * 2;
+                        const i1 = indices[i + 1] * 2;
+                        const i2 = indices[i + 2] * 2;
+                        const ax = flat[i0], ay = flat[i0 + 1];
+                        const bx = flat[i1], by = flat[i1 + 1];
+                        const cx = flat[i2], cy = flat[i2 + 1];
+                        const triArea = 0.5 * Math.abs((bx - ax) * (cy - ay) - (cx - ax) * (by - ay));
+                        if (triArea > 1e-18) {
+                            cumulativeArea += triArea;
+                            triangles.push(ax, ay, bx, by, cx, cy);
+                            cdf.push(cumulativeArea);
+                        }
+                    }
+                }
+            }
+
+            // 2) Záložní Y-bucketed index pro případ selhání triangulace / degenerace
+            let bbox = { minLon: Infinity, maxLon: -Infinity, minLat: Infinity, maxLat: -Infinity };
+            for (let p = 0; p < parts.length; p++) {
+                for (let r = 0; r < parts[p].length; r++) {
+                    const ring = parts[p][r];
+                    for (let i = 0; i < ring.length; i++) {
+                        const lon = ring[i][0], lat = ring[i][1];
+                        if (lon < bbox.minLon) bbox.minLon = lon;
+                        if (lon > bbox.maxLon) bbox.maxLon = lon;
+                        if (lat < bbox.minLat) bbox.minLat = lat;
+                        if (lat > bbox.maxLat) bbox.maxLat = lat;
+                    }
+                }
+            }
+
+            let yBuckets = null;
+            const BUCKET_COUNT = 256;
+            if (cdf.length === 0 && bbox.maxLat > bbox.minLat) {
+                yBuckets = Array.from({ length: BUCKET_COUNT }, () => []);
+                const latSpan = bbox.maxLat - bbox.minLat;
+                for (let p = 0; p < parts.length; p++) {
+                    for (let r = 0; r < parts[p].length; r++) {
+                        const ring = parts[p][r];
+                        const n = ring.length;
+                        for (let i = 0; i < n; i++) {
+                            const a = ring[i];
+                            const b = ring[(i + 1) % n];
+                            const yMin = Math.min(a[1], b[1]);
+                            const yMax = Math.max(a[1], b[1]);
+                            if (yMin === yMax) continue;
+                            const bStart = Math.max(0, Math.floor(((yMin - bbox.minLat) / latSpan) * BUCKET_COUNT));
+                            const bEnd = Math.min(BUCKET_COUNT - 1, Math.floor(((yMax - bbox.minLat) / latSpan) * BUCKET_COUNT));
+                            const edge = [a[0], a[1], b[0], b[1]];
+                            for (let bi = bStart; bi <= bEnd; bi++) {
+                                yBuckets[bi].push(edge);
+                            }
+                        }
+                    }
+                }
+            }
+
+            const structure = { triangles, cdf, totalArea: cumulativeArea, bbox, yBuckets, BUCKET_COUNT };
+            polygonSamplingCache.set(area, structure);
+            return structure;
+        }
+
+        function sampleRandomPointInPolygon(area) {
+            const struct = buildPolygonSamplingStructure(area);
+
+            // Rychlé O(log T) vzorkování z triangulace (přesné rovnoměrné sférické rozdělení)
+            if (struct.cdf.length > 0) {
+                const target = Math.random() * struct.totalArea;
+                let lo = 0, hi = struct.cdf.length - 1;
+                while (lo < hi) {
+                    const mid = (lo + hi) >>> 1;
+                    if (struct.cdf[mid] < target) lo = mid + 1;
+                    else hi = mid;
+                }
+
+                const base = lo * 6;
+                const ax = struct.triangles[base], ay = struct.triangles[base + 1];
+                const bx = struct.triangles[base + 2], by = struct.triangles[base + 3];
+                const cx = struct.triangles[base + 4], cy = struct.triangles[base + 5];
+
+                const s1 = Math.sqrt(Math.random());
+                const s2 = Math.random();
+                const px = (1 - s1) * ax + s1 * (1 - s2) * bx + s1 * s2 * cx;
+                const py = (1 - s1) * ay + s1 * (1 - s2) * by + s1 * s2 * cy;
+
+                return {
+                    lon: toDeg(px),
+                    lat: toDeg(Math.asin(Math.max(-1, Math.min(1, py))))
+                };
+            }
+
+            // Fallback: Y-bucketed ray-casting rejection sampling
+            const { bbox, yBuckets, BUCKET_COUNT } = struct;
+            if (yBuckets) {
+                const sinMin = Math.sin(toRad(bbox.minLat));
+                const sinMax = Math.sin(toRad(bbox.maxLat));
+                const latSpan = bbox.maxLat - bbox.minLat;
+
+                for (let attempt = 0; attempt < 15000; attempt++) {
+                    const lon = bbox.minLon + Math.random() * (bbox.maxLon - bbox.minLon);
+                    const sinLat = sinMin + Math.random() * (sinMax - sinMin);
+                    const lat = toDeg(Math.asin(Math.max(-1, Math.min(1, sinLat))));
+
+                    const bi = Math.max(0, Math.min(BUCKET_COUNT - 1, Math.floor(((lat - bbox.minLat) / latSpan) * BUCKET_COUNT)));
+                    const edges = yBuckets[bi];
+                    let inside = false;
+                    for (let i = 0; i < edges.length; i++) {
+                        const x1 = edges[i][0], y1 = edges[i][1];
+                        const x2 = edges[i][2], y2 = edges[i][3];
+                        if (((y1 > lat) !== (y2 > lat)) && (lon < ((x2 - x1) * (lat - y1)) / (y2 - y1) + x1)) {
+                            inside = !inside;
+                        }
+                    }
+                    if (inside) return { lat, lon };
+                }
+            }
+
+            return null;
+        }
+
+        /**
+         * ============================================================================
+         * INICIALIZACE MAPY (MAPLIBRE GL JS + ČÚZK VRSTVY)
          * ============================================================================
          */
         function initMap() {
             map = new maplibregl.Map({
                 container: 'map',
                 style: 'https://tiles.openfreemap.org/styles/bright',
-                center: [14.425, 50.085], // Praha / střed Čech
+                center: [14.425, 50.085],
                 zoom: 11,
                 attributionControl: true
             });
 
-            // Přidání ovládacích prvků navigace a měřítka
             map.addControl(new maplibregl.NavigationControl({ showCompass: true }), 'top-right');
             map.addControl(new maplibregl.ScaleControl({ maxWidth: 100, unit: 'metric' }), 'bottom-left');
-
-            // Geolocation tlačítko pro rychlé nalezení polohy uživatele
             map.addControl(new maplibregl.GeolocateControl({
                 positionOptions: { enableHighAccuracy: true },
                 trackUserLocation: false
             }), 'top-right');
 
             map.on('load', () => {
-                // Zdroj a vrstvy pro vybranou oblast
+                // 1. Podkladová rastrová vrstva: ZABAGED / Základní topografická mapa ČR (ČÚZK)
+                map.addSource('cuzk-zabaged', {
+                    type: 'raster',
+                    tiles: [
+                        'https://ags.cuzk.cz/arcgis1/rest/services/ZTM_WM/MapServer/tile/{z}/{y}/{x}'
+                    ],
+                    tileSize: 256,
+                    minzoom: 5,
+                    maxzoom: 19,
+                    bounds: [12.0, 48.5, 18.9, 51.1],
+                    attribution: '© ČÚZK (ZABAGED / ZTM ČR)'
+                });
+
+                map.addLayer({
+                    id: 'layer-cuzk-zabaged',
+                    type: 'raster',
+                    source: 'cuzk-zabaged',
+                    layout: { visibility: 'none' }
+                });
+
+                // 2. Podkladová rastrová vrstva: Ortofoto ČÚZK
+                map.addSource('cuzk-ortofoto', {
+                    type: 'raster',
+                    tiles: [
+                        'https://ags.cuzk.cz/arcgis1/rest/services/ORTOFOTO_WM/MapServer/tile/{z}/{y}/{x}'
+                    ],
+                    tileSize: 256,
+                    minzoom: 6,
+                    maxzoom: 20,
+                    bounds: [12.0, 48.5, 18.9, 51.1],
+                    attribution: '© ČÚZK (Ortofoto)'
+                });
+
+                map.addLayer({
+                    id: 'layer-cuzk-ortofoto',
+                    type: 'raster',
+                    source: 'cuzk-ortofoto',
+                    layout: { visibility: 'none' }
+                });
+
+                // 3. Vrstvy pro vybranou oblast
                 map.addSource('selected-area', {
                     type: 'geojson',
                     data: { type: 'FeatureCollection', features: [] }
@@ -655,7 +1424,7 @@
                     }
                 });
 
-                // Zdroj pro střed kruhu (vizuální bod při kreslení/zobrazení kruhu)
+                // 4. Vrstva pro střed kruhu
                 map.addSource('circle-center', {
                     type: 'geojson',
                     data: { type: 'FeatureCollection', features: [] }
@@ -673,60 +1442,132 @@
                     }
                 });
 
-                // Vykreslení výchozí aktivní oblasti
+                // 5. Vrstvy pro náhled kresleného polygonu
+                map.addSource('draw-poly-preview', {
+                    type: 'geojson',
+                    data: { type: 'FeatureCollection', features: [] }
+                });
+
+                map.addLayer({
+                    id: 'draw-poly-fill',
+                    type: 'fill',
+                    source: 'draw-poly-preview',
+                    filter: ['==', '$type', 'Polygon'],
+                    paint: { 'fill-color': '#f59e0b', 'fill-opacity': 0.2 }
+                });
+
+                map.addLayer({
+                    id: 'draw-poly-line',
+                    type: 'line',
+                    source: 'draw-poly-preview',
+                    paint: { 'line-color': '#d97706', 'line-width': 2.5, 'line-dasharray': [2, 2] }
+                });
+
+                map.addLayer({
+                    id: 'draw-poly-points',
+                    type: 'circle',
+                    source: 'draw-poly-preview',
+                    filter: ['==', '$type', 'Point'],
+                    paint: {
+                        'circle-radius': ['case', ['==', ['get', 'isFirst'], true], 7, 5],
+                        'circle-color': ['case', ['==', ['get', 'isFirst'], true], '#16a34a', '#ffffff'],
+                        'circle-stroke-width': 2,
+                        'circle-stroke-color': '#d97706'
+                    }
+                });
+
+                // 6. Vrstva bodů historie na mapě
+                map.addSource('history-points', {
+                    type: 'geojson',
+                    data: { type: 'FeatureCollection', features: [] }
+                });
+
+                map.addLayer({
+                    id: 'history-points-circle',
+                    type: 'circle',
+                    source: 'history-points',
+                    paint: {
+                        'circle-radius': 6,
+                        'circle-color': '#2563eb',
+                        'circle-stroke-width': 2,
+                        'circle-stroke-color': '#ffffff',
+                        'circle-opacity': 0.88
+                    }
+                });
+
+                map.on('mouseenter', 'history-points-circle', () => {
+                    if (!state.isDrawing) map.getCanvas().style.cursor = 'pointer';
+                });
+                map.on('mouseleave', 'history-points-circle', () => {
+                    if (!state.isDrawing) map.getCanvas().style.cursor = '';
+                });
+
                 updateAreaOnMap();
+                updateHistoryOnMap();
                 fitActiveArea(false);
             });
 
-            setupDrawingEvents();
+            setupMapInteractions();
         }
 
         /**
-         * Přepínání mezi standardní OSM a turistickou OpenTopoMap vrstvou
+         * Přepínání mezi Vektorovou mapou, ZABAGED (ČÚZK) a Ortofoto ČÚZK
          */
         function setBaseLayer(layerName) {
             if (!map || !map.isStyleLoaded()) return;
 
-            const btnOsm = document.getElementById('btn-layer-osm');
-            const btnTopo = document.getElementById('btn-layer-topo');
+            const buttons = {
+                vector: document.getElementById('btn-layer-vector'),
+                zabaged: document.getElementById('btn-layer-zabaged'),
+                ortofoto: document.getElementById('btn-layer-ortofoto')
+            };
 
-            if (layerName === 'osm') {
-                map.setLayoutProperty('layer-osm', 'visibility', 'visible');
-                map.setLayoutProperty('layer-topo', 'visibility', 'none');
-                btnOsm.className = 'px-3 py-1.5 text-xs font-semibold rounded-lg transition bg-brand-600 text-white shadow-sm';
-                btnTopo.className = 'px-3 py-1.5 text-xs font-semibold rounded-lg transition text-slate-600 hover:bg-slate-100';
-            } else {
-                map.setLayoutProperty('layer-osm', 'visibility', 'none');
-                map.setLayoutProperty('layer-topo', 'visibility', 'visible');
-                btnTopo.className = 'px-3 py-1.5 text-xs font-semibold rounded-lg transition bg-brand-600 text-white shadow-sm';
-                btnOsm.className = 'px-3 py-1.5 text-xs font-semibold rounded-lg transition text-slate-600 hover:bg-slate-100';
+            const activeCls = 'px-2.5 sm:px-3 py-1.5 text-xs font-semibold rounded-lg transition bg-brand-600 text-white shadow-sm';
+            const idleCls = 'px-2.5 sm:px-3 py-1.5 text-xs font-semibold rounded-lg transition text-slate-600 hover:bg-slate-100';
+
+            Object.keys(buttons).forEach(k => {
+                buttons[k].className = (k === layerName) ? activeCls : idleCls;
+            });
+
+            if (map.getLayer('layer-cuzk-zabaged')) {
+                map.setLayoutProperty('layer-cuzk-zabaged', 'visibility', layerName === 'zabaged' ? 'visible' : 'none');
+            }
+            if (map.getLayer('layer-cuzk-ortofoto')) {
+                map.setLayoutProperty('layer-cuzk-ortofoto', 'visibility', layerName === 'ortofoto' ? 'visible' : 'none');
             }
         }
 
         /**
          * ============================================================================
-         * INTERAKTIVNÍ KRESLENÍ OBLASTI (MYŠ I DOTYK)
+         * INTERAKTIVNÍ KRESLENÍ A EDITACE OBLASTI NA MAPĚ
          * ============================================================================
          */
         function startDrawingMode() {
+            stopPolygonEditMode(false);
             state.isDrawing = true;
             state.drawStartLngLat = null;
+            state.drawPolyPoints = [];
+            state.drawCursorLngLat = null;
             document.body.classList.add('drawing-mode');
-
-            // Zablokujeme posouvání mapy, aby tažení prstem/myší kreslilo tvar
-            map.dragPan.disable();
 
             const banner = document.getElementById('draw-banner');
             const bannerText = document.getElementById('draw-banner-text');
+            const polyActions = document.getElementById('draw-poly-actions');
             banner.classList.remove('hidden');
 
-            if (state.activeArea.type === 'rectangle') {
-                bannerText.textContent = 'Táhněte prstem nebo myší po mapě pro obdélník';
+            if (state.activeArea.type === 'polygon') {
+                polyActions.classList.remove('hidden');
+                updateFinishPolyButton();
+                bannerText.textContent = 'Klepněte na mapu pro přidání bodů polygonu.';
+                updatePolygonDrawPreview();
             } else {
-                bannerText.textContent = 'Klepněte na střed kruhu a táhněte pro poloměr';
+                polyActions.classList.add('hidden');
+                map.dragPan.disable();
+                bannerText.textContent = state.activeArea.type === 'rectangle'
+                    ? 'Táhněte prstem nebo myší po mapě pro obdélník.'
+                    : 'Klepněte na střed kruhu a táhněte pro poloměr.';
             }
 
-            // Na mobilu automaticky sbalíme panel, aby byla vidět celá mapa
             if (window.innerWidth < 768) {
                 setMobileSheetMinimized(true);
             }
@@ -735,15 +1576,247 @@
         function cancelDrawing() {
             state.isDrawing = false;
             state.drawStartLngLat = null;
+            state.drawPolyPoints = [];
+            state.drawCursorLngLat = null;
             document.body.classList.remove('drawing-mode');
-            map.dragPan.enable();
+            if (map) {
+                map.dragPan.enable();
+                if (map.getSource('draw-poly-preview')) {
+                    map.getSource('draw-poly-preview').setData({ type: 'FeatureCollection', features: [] });
+                }
+            }
             document.getElementById('draw-banner').classList.add('hidden');
+            document.getElementById('draw-poly-actions').classList.add('hidden');
         }
 
-        function setupDrawingEvents() {
+        function updateFinishPolyButton() {
+            const btn = document.getElementById('btn-finish-poly');
+            const count = state.drawPolyPoints.length;
+            btn.textContent = `Dokončit (${count})`;
+            btn.disabled = count < 3;
+        }
+
+        function undoPolygonDrawPoint() {
+            if (state.drawPolyPoints.length > 0) {
+                state.drawPolyPoints.pop();
+                updateFinishPolyButton();
+                updatePolygonDrawPreview();
+            }
+        }
+
+        function finishPolygonDrawing() {
+            if (state.drawPolyPoints.length < 3) {
+                showToast('Polygon vyžaduje alespoň 3 body.', 'error');
+                return;
+            }
+            state.activeArea = {
+                name: 'Vlastní polygon',
+                type: 'polygon',
+                coordinates: state.drawPolyPoints.map(pt => [pt[0], pt[1]])
+            };
+            cancelDrawing();
+            updateAreaOnMap();
+            syncAreaInputsFromState();
+            showToast(`Polygon vytvořen (${state.activeArea.coordinates.length} bodů).`, 'success');
+            if (window.innerWidth < 768) {
+                setMobileSheetMinimized(false);
+            }
+        }
+
+        function updatePolygonDrawPreview() {
+            if (!map || !map.getSource('draw-poly-preview')) return;
+            const pts = state.drawPolyPoints;
+            const features = [];
+
+            pts.forEach((p, idx) => {
+                features.push({
+                    type: 'Feature',
+                    properties: { isFirst: idx === 0 },
+                    geometry: { type: 'Point', coordinates: p }
+                });
+            });
+
+            const lineCoords = [...pts];
+            if (state.drawCursorLngLat && pts.length > 0) {
+                lineCoords.push([state.drawCursorLngLat.lng, state.drawCursorLngLat.lat]);
+            }
+
+            if (lineCoords.length >= 2) {
+                features.push({
+                    type: 'Feature',
+                    geometry: { type: 'LineString', coordinates: lineCoords }
+                });
+            }
+
+            if (pts.length >= 3) {
+                features.push({
+                    type: 'Feature',
+                    geometry: { type: 'Polygon', coordinates: [[...pts, pts[0]]] }
+                });
+            }
+
+            map.getSource('draw-poly-preview').setData({
+                type: 'FeatureCollection',
+                features
+            });
+        }
+
+        /**
+         * Editace vrcholů polygonu na mapě
+         */
+        function togglePolygonEditMode() {
+            if (state.isEditingVertices) {
+                stopPolygonEditMode();
+            } else {
+                startPolygonEditMode();
+            }
+        }
+
+        function startPolygonEditMode() {
+            if (!state.activeArea || state.activeArea.type !== 'polygon') return;
+            if (Array.isArray(state.activeArea.multiCoordinates) || Array.isArray(state.activeArea.holes)) {
+                showToast('Složený polygon s otvory nebo více částmi nelze upravovat ručně po bodech.', 'info');
+                return;
+            }
+            const coords = state.activeArea.coordinates || [];
+            if (coords.length < 3) {
+                showToast('Nejprve polygon nakreslete nebo vložte z textu.', 'info');
+                return;
+            }
+            if (coords.length > MAX_EDITABLE_VERTICES) {
+                showToast(`Ruční editace vrcholů je dostupná do ${MAX_EDITABLE_VERTICES} bodů (tento má ${coords.length}).`, 'info');
+                return;
+            }
+
+            cancelDrawing();
+            state.isEditingVertices = true;
+            state.selectedVertexIdx = null;
+            document.getElementById('edit-poly-banner').classList.remove('hidden');
+            document.getElementById('btn-delete-vertex').classList.add('hidden');
+            document.getElementById('btn-edit-poly-vertices').classList.add('ring-2', 'ring-brand-600');
+
+            renderPolygonEditHandles();
+            if (window.innerWidth < 768) {
+                setMobileSheetMinimized(true);
+            }
+        }
+
+        function stopPolygonEditMode(showBannerToast = true) {
+            state.isEditingVertices = false;
+            state.selectedVertexIdx = null;
+            clearPolygonEditHandles();
+            document.getElementById('edit-poly-banner').classList.add('hidden');
+            document.getElementById('btn-edit-poly-vertices').classList.remove('ring-2', 'ring-brand-600');
+            if (showBannerToast && state.activeArea && state.activeArea.type === 'polygon') {
+                polygonSamplingCache.delete(state.activeArea);
+                updateAreaOnMap();
+            }
+        }
+
+        function clearPolygonEditHandles() {
+            editMarkers.forEach(m => m.remove());
+            editMarkers = [];
+        }
+
+        function renderPolygonEditHandles() {
+            clearPolygonEditHandles();
+            if (!state.isEditingVertices || !state.activeArea || state.activeArea.type !== 'polygon') return;
+
+            const coords = state.activeArea.coordinates;
+            const n = coords.length;
+
+            // Středy hran (+) pro přidání vrcholu
+            for (let i = 0; i < n; i++) {
+                const a = coords[i];
+                const b = coords[(i + 1) % n];
+                const midLon = (a[0] + b[0]) / 2;
+                const midLat = (a[1] + b[1]) / 2;
+
+                const midEl = document.createElement('div');
+                midEl.className = 'poly-midpoint-handle';
+                midEl.textContent = '+';
+                midEl.title = 'Přidat bod';
+                midEl.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    coords.splice(i + 1, 0, [midLon, midLat]);
+                    state.selectedVertexIdx = i + 1;
+                    polygonSamplingCache.delete(state.activeArea);
+                    updateAreaOnMap();
+                    syncAreaInputsFromState();
+                    renderPolygonEditHandles();
+                    updateDeleteVertexBtn();
+                });
+
+                const midMarker = new maplibregl.Marker({ element: midEl })
+                    .setLngLat([midLon, midLat])
+                    .addTo(map);
+                editMarkers.push(midMarker);
+            }
+
+            // Vrcholy
+            for (let i = 0; i < n; i++) {
+                const pt = coords[i];
+                const el = document.createElement('div');
+                el.className = 'poly-vertex-handle' + (state.selectedVertexIdx === i ? ' selected' : '');
+
+                const marker = new maplibregl.Marker({ element: el, draggable: true })
+                    .setLngLat([pt[0], pt[1]])
+                    .addTo(map);
+
+                let dragged = false;
+                marker.on('dragstart', () => { dragged = true; });
+                marker.on('drag', () => {
+                    const lngLat = marker.getLngLat();
+                    coords[i] = [lngLat.lng, lngLat.lat];
+                    polygonSamplingCache.delete(state.activeArea);
+                    updateAreaOnMap();
+                });
+                marker.on('dragend', () => {
+                    syncAreaInputsFromState();
+                    renderPolygonEditHandles();
+                    setTimeout(() => { dragged = false; }, 50);
+                });
+
+                el.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    if (dragged) return;
+                    state.selectedVertexIdx = (state.selectedVertexIdx === i) ? null : i;
+                    renderPolygonEditHandles();
+                    updateDeleteVertexBtn();
+                });
+
+                editMarkers.push(marker);
+            }
+        }
+
+        function updateDeleteVertexBtn() {
+            const btn = document.getElementById('btn-delete-vertex');
+            const coords = state.activeArea && state.activeArea.coordinates;
+            if (state.selectedVertexIdx !== null && coords && coords.length > 3) {
+                btn.classList.remove('hidden');
+            } else {
+                btn.classList.add('hidden');
+            }
+        }
+
+        function deleteSelectedVertex() {
+            if (state.selectedVertexIdx === null || !state.activeArea || !state.activeArea.coordinates) return;
+            if (state.activeArea.coordinates.length <= 3) {
+                showToast('Polygon musí mít alespoň 3 body.', 'error');
+                return;
+            }
+            state.activeArea.coordinates.splice(state.selectedVertexIdx, 1);
+            state.selectedVertexIdx = null;
+            polygonSamplingCache.delete(state.activeArea);
+            updateAreaOnMap();
+            syncAreaInputsFromState();
+            renderPolygonEditHandles();
+            updateDeleteVertexBtn();
+        }
+
+        function setupMapInteractions() {
             const canvas = map.getCanvas();
 
-            // Helper pro získání LngLat z Mouse nebo Touch události
             function getLngLatFromEvent(e) {
                 const rect = canvas.getBoundingClientRect();
                 let clientX, clientY;
@@ -761,32 +1834,38 @@
             }
 
             const onStart = (e) => {
-                if (!state.isDrawing) return;
-                // Ignorovat multidotyk (např. pinch-to-zoom)
+                if (!state.isDrawing || state.activeArea.type === 'polygon') return;
                 if (e.touches && e.touches.length > 1) return;
-
                 e.preventDefault();
                 state.drawStartLngLat = getLngLatFromEvent(e);
             };
 
             const onMove = (e) => {
-                if (!state.isDrawing || !state.drawStartLngLat) return;
+                if (!state.isDrawing) return;
+
+                if (state.activeArea.type === 'polygon') {
+                    if (!e.touches) {
+                        state.drawCursorLngLat = getLngLatFromEvent(e);
+                        updatePolygonDrawPreview();
+                    }
+                    return;
+                }
+
+                if (!state.drawStartLngLat) return;
                 if (e.touches && e.touches.length > 1) return;
 
                 e.preventDefault();
                 const currentLngLat = getLngLatFromEvent(e);
 
                 if (state.activeArea.type === 'rectangle') {
-                    const minLat = Math.min(state.drawStartLngLat.lat, currentLngLat.lat);
-                    const maxLat = Math.max(state.drawStartLngLat.lat, currentLngLat.lat);
-                    const minLon = Math.min(state.drawStartLngLat.lng, currentLngLat.lng);
-                    const maxLon = Math.max(state.drawStartLngLat.lng, currentLngLat.lng);
-
                     state.activeArea = {
                         ...state.activeArea,
                         name: 'Vlastní obdélník',
                         type: 'rectangle',
-                        minLat, maxLat, minLon, maxLon
+                        minLat: Math.min(state.drawStartLngLat.lat, currentLngLat.lat),
+                        maxLat: Math.max(state.drawStartLngLat.lat, currentLngLat.lat),
+                        minLon: Math.min(state.drawStartLngLat.lng, currentLngLat.lng),
+                        maxLon: Math.max(state.drawStartLngLat.lng, currentLngLat.lng)
                     };
                 } else {
                     const dist = haversineDistance(
@@ -808,15 +1887,14 @@
             };
 
             const onEnd = (e) => {
-                if (!state.isDrawing || !state.drawStartLngLat) return;
-                
+                if (!state.isDrawing || state.activeArea.type === 'polygon' || !state.drawStartLngLat) return;
+
                 const endLngLat = getLngLatFromEvent(e);
                 const dist = haversineDistance(
                     state.drawStartLngLat.lat, state.drawStartLngLat.lng,
                     endLngLat.lat, endLngLat.lng
                 );
 
-                // Pokud uživatel u kruhu jen klikl bez tažení, použijeme poloměr z formuláře
                 if (state.activeArea.type === 'circle' && dist < 20) {
                     const inputRadius = parseFloat(document.getElementById('input-circle-radius').value) || 5;
                     const unit = document.getElementById('input-circle-unit').value;
@@ -838,21 +1916,70 @@
                 updateUIHeaders();
                 showToast('Oblast byla aktualizována na mapě.', 'success');
 
-                // Na mobilu opět vysuneme panel
                 if (window.innerWidth < 768) {
                     setMobileSheetMinimized(false);
                 }
             };
 
-            // Myš
             canvas.addEventListener('mousedown', onStart);
             window.addEventListener('mousemove', onMove);
             window.addEventListener('mouseup', onEnd);
 
-            // Dotyková obrazovka
             canvas.addEventListener('touchstart', onStart, { passive: false });
             canvas.addEventListener('touchmove', onMove, { passive: false });
             canvas.addEventListener('touchend', onEnd);
+
+            // Kliknutí na mapu: kreslení polygonu / klik na bod historie / sbalení panelu
+            map.on('click', (e) => {
+                if (suppressNextMapClick) {
+                    suppressNextMapClick = false;
+                    return;
+                }
+
+                // Kreslení polygonu klikáním
+                if (state.isDrawing && state.activeArea.type === 'polygon') {
+                    const pts = state.drawPolyPoints;
+                    // Kontrola kliknutí na první bod pro uzavření
+                    if (pts.length >= 3) {
+                        const firstPx = map.project(pts[0]);
+                        const clickPx = e.point;
+                        const pixelDist = Math.hypot(firstPx.x - clickPx.x, firstPx.y - clickPx.y);
+                        if (pixelDist < 16) {
+                            finishPolygonDrawing();
+                            return;
+                        }
+                    }
+
+                    pts.push([e.lngLat.lng, e.lngLat.lat]);
+                    updateFinishPolyButton();
+                    updatePolygonDrawPreview();
+                    return;
+                }
+
+                if (state.isDrawing || state.isEditingVertices) return;
+
+                // Kontrola kliknutí na bod historie na mapě
+                if (map.getLayer('history-points-circle')) {
+                    const hit = map.queryRenderedFeatures(e.point, { layers: ['history-points-circle'] });
+                    if (hit.length > 0) {
+                        const histId = hit[0].properties.id;
+                        selectHistoryItem(histId, false);
+                        return;
+                    }
+                }
+
+                // Kliknutí na mapu při rozbaleném panelu jej zmenší (sbalí)
+                if (window.innerWidth < 768 && !state.isMobileSheetMinimized) {
+                    setMobileSheetMinimized(true);
+                }
+            });
+
+            map.on('dblclick', (e) => {
+                if (state.isDrawing && state.activeArea.type === 'polygon' && state.drawPolyPoints.length >= 3) {
+                    e.preventDefault();
+                    finishPolygonDrawing();
+                }
+            });
         }
 
         /**
@@ -869,109 +1996,148 @@
             if (area.type === 'rectangle') {
                 geoJsonFeature = createRectangleGeoJSON(area.minLat, area.maxLat, area.minLon, area.maxLon);
                 map.getSource('circle-center').setData({ type: 'FeatureCollection', features: [] });
-            } else {
+            } else if (area.type === 'circle') {
                 geoJsonFeature = createGeodesicCircleGeoJSON(area.centerLat, area.centerLon, area.radiusMeters);
                 map.getSource('circle-center').setData({
                     type: 'Feature',
-                    geometry: {
-                        type: 'Point',
-                        coordinates: [area.centerLon, area.centerLat]
-                    }
+                    geometry: { type: 'Point', coordinates: [area.centerLon, area.centerLat] }
                 });
+            } else if (area.type === 'polygon') {
+                geoJsonFeature = createPolygonGeoJSON(area);
+                map.getSource('circle-center').setData({ type: 'FeatureCollection', features: [] });
             }
 
             map.getSource('selected-area').setData(geoJsonFeature);
             updateUIHeaders();
         }
 
-        /**
-         * Přiblíží kameru mapy tak, aby celá aktivní oblast byla přehledně vidět
-         */
         function fitActiveArea(animate = true) {
             if (!map || !state.activeArea) return;
             const area = state.activeArea;
-            let bounds;
+            let bounds = null;
 
             if (area.type === 'rectangle') {
-                bounds = new maplibregl.LngLatBounds(
-                    [area.minLon, area.minLat],
-                    [area.maxLon, area.maxLat]
-                );
-            } else {
+                bounds = new maplibregl.LngLatBounds([area.minLon, area.minLat], [area.maxLon, area.maxLat]);
+            } else if (area.type === 'circle') {
                 const north = destinationPoint(area.centerLat, area.centerLon, 0, area.radiusMeters);
                 const south = destinationPoint(area.centerLat, area.centerLon, Math.PI, area.radiusMeters);
                 const east = destinationPoint(area.centerLat, area.centerLon, Math.PI / 2, area.radiusMeters);
                 const west = destinationPoint(area.centerLat, area.centerLon, (3 * Math.PI) / 2, area.radiusMeters);
-                bounds = new maplibregl.LngLatBounds(
-                    [west.lon, south.lat],
-                    [east.lon, north.lat]
-                );
+                bounds = new maplibregl.LngLatBounds([west.lon, south.lat], [east.lon, north.lat]);
+            } else if (area.type === 'polygon') {
+                const parts = getPolygonParts(area);
+                if (parts.length === 0) return;
+                bounds = new maplibregl.LngLatBounds();
+                for (let p = 0; p < parts.length; p++) {
+                    for (let r = 0; r < parts[p].length; r++) {
+                        const ring = parts[p][r];
+                        for (let i = 0; i < ring.length; i++) {
+                            bounds.extend(ring[i]);
+                        }
+                    }
+                }
             }
 
+            if (!bounds || bounds.isEmpty()) return;
+
             const padding = window.innerWidth < 768
-                ? { top: 70, bottom: 260, left: 30, right: 30 }
+                ? { top: 70, bottom: state.isMobileSheetMinimized ? 100 : 260, left: 30, right: 30 }
                 : { top: 60, bottom: 60, left: 60, right: 60 };
 
             map.fitBounds(bounds, { padding, duration: animate ? 800 : 0, maxZoom: 15 });
         }
 
-        /**
-         * Přepnutí tvaru oblasti v záložce Oblast
-         */
         function setAreaShape(shape) {
+            stopPolygonEditMode(false);
+            cancelDrawing();
+
             const btnRect = document.getElementById('shape-btn-rect');
             const btnCircle = document.getElementById('shape-btn-circle');
+            const btnPoly = document.getElementById('shape-btn-polygon');
             const formRect = document.getElementById('form-rectangle');
             const formCircle = document.getElementById('form-circle');
+            const formPoly = document.getElementById('form-polygon');
             const helpText = document.getElementById('draw-help-text');
 
+            const activeBtnCls = 'min-h-[46px] rounded-xl border-2 border-brand-600 bg-brand-50/70 text-brand-800 font-semibold text-xs sm:text-sm flex items-center justify-center gap-1.5 transition';
+            const idleBtnCls = 'min-h-[46px] rounded-xl border-2 border-slate-200 bg-white text-slate-600 hover:bg-slate-50 font-semibold text-xs sm:text-sm flex items-center justify-center gap-1.5 transition';
+
+            btnRect.className = shape === 'rectangle' ? activeBtnCls : idleBtnCls;
+            btnCircle.className = shape === 'circle' ? activeBtnCls : idleBtnCls;
+            btnPoly.className = shape === 'polygon' ? activeBtnCls : idleBtnCls;
+
+            formRect.classList.toggle('hidden', shape !== 'rectangle');
+            formCircle.classList.toggle('hidden', shape !== 'circle');
+            formPoly.classList.toggle('hidden', shape !== 'polygon');
+
             if (shape === 'rectangle') {
-                btnRect.className = 'min-h-[46px] rounded-xl border-2 border-brand-600 bg-brand-50/70 text-brand-800 font-semibold text-sm flex items-center justify-center gap-2 transition';
-                btnCircle.className = 'min-h-[46px] rounded-xl border-2 border-slate-200 bg-white text-slate-600 hover:bg-slate-50 font-semibold text-sm flex items-center justify-center gap-2 transition';
-                formRect.classList.remove('hidden');
-                formCircle.classList.add('hidden');
                 helpText.textContent = 'Klepněte na tlačítko níže a poté táhněte prstem nebo myší po mapě pro nakreslení obdélníku.';
-
                 if (state.activeArea.type !== 'rectangle') {
-                    // Konverze z kruhu na obdélník kolem středu
-                    const cLat = state.activeArea.centerLat;
-                    const cLon = state.activeArea.centerLon;
-                    const r = state.activeArea.radiusMeters;
-                    const n = destinationPoint(cLat, cLon, 0, r).lat;
-                    const s = destinationPoint(cLat, cLon, Math.PI, r).lat;
-                    const e = destinationPoint(cLat, cLon, Math.PI / 2, r).lon;
-                    const w = destinationPoint(cLat, cLon, (3 * Math.PI) / 2, r).lon;
-
+                    const b = getActiveAreaBounds();
                     state.activeArea = {
                         name: 'Vlastní obdélník',
                         type: 'rectangle',
-                        minLat: s, maxLat: n, minLon: w, maxLon: e
+                        minLat: b.minLat, maxLat: b.maxLat, minLon: b.minLon, maxLon: b.maxLon
                     };
                 }
-            } else {
-                btnCircle.className = 'min-h-[46px] rounded-xl border-2 border-brand-600 bg-brand-50/70 text-brand-800 font-semibold text-sm flex items-center justify-center gap-2 transition';
-                btnRect.className = 'min-h-[46px] rounded-xl border-2 border-slate-200 bg-white text-slate-600 hover:bg-slate-50 font-semibold text-sm flex items-center justify-center gap-2 transition';
-                formCircle.classList.remove('hidden');
-                formRect.classList.add('hidden');
+            } else if (shape === 'circle') {
                 helpText.textContent = 'Klepněte na tlačítko níže, poté klepněte na střed kruhu na mapě a táhněte pro určení poloměru.';
-
                 if (state.activeArea.type !== 'circle') {
-                    const cLat = (state.activeArea.minLat + state.activeArea.maxLat) / 2;
-                    const cLon = (state.activeArea.minLon + state.activeArea.maxLon) / 2;
-                    const r = Math.max(200, Math.round(haversineDistance(cLat, cLon, state.activeArea.maxLat, cLon)));
-
+                    const b = getActiveAreaBounds();
+                    const cLat = (b.minLat + b.maxLat) / 2;
+                    const cLon = (b.minLon + b.maxLon) / 2;
+                    const r = Math.max(200, Math.round(haversineDistance(cLat, cLon, b.maxLat, cLon)));
                     state.activeArea = {
                         name: 'Vlastní kruh',
                         type: 'circle',
-                        centerLat: cLat,
-                        centerLon: cLon,
-                        radiusMeters: r
+                        centerLat: cLat, centerLon: cLon, radiusMeters: r
+                    };
+                }
+            } else if (shape === 'polygon') {
+                helpText.textContent = 'Klepněte na tlačítko níže a postupně klikejte body na mapě. Uzavřete klepnutím na první bod nebo tlačítkem Dokončit.';
+                if (state.activeArea.type !== 'polygon') {
+                    const b = getActiveAreaBounds();
+                    state.activeArea = {
+                        name: 'Vlastní polygon',
+                        type: 'polygon',
+                        coordinates: [
+                            [b.minLon, b.minLat],
+                            [b.maxLon, b.minLat],
+                            [b.maxLon, b.maxLat],
+                            [b.minLon, b.maxLat]
+                        ]
                     };
                 }
             }
 
             syncAreaInputsFromState();
             updateAreaOnMap();
+        }
+
+        function getActiveAreaBounds() {
+            const area = state.activeArea;
+            if (area.type === 'rectangle') {
+                return { minLat: area.minLat, maxLat: area.maxLat, minLon: area.minLon, maxLon: area.maxLon };
+            }
+            if (area.type === 'circle') {
+                const n = destinationPoint(area.centerLat, area.centerLon, 0, area.radiusMeters).lat;
+                const s = destinationPoint(area.centerLat, area.centerLon, Math.PI, area.radiusMeters).lat;
+                const e = destinationPoint(area.centerLat, area.centerLon, Math.PI / 2, area.radiusMeters).lon;
+                const w = destinationPoint(area.centerLat, area.centerLon, (3 * Math.PI) / 2, area.radiusMeters).lon;
+                return { minLat: s, maxLat: n, minLon: w, maxLon: e };
+            }
+            const parts = getPolygonParts(area);
+            let minLat = 50.06, maxLat = 50.10, minLon = 14.39, maxLon = 14.45;
+            if (parts.length > 0) {
+                minLat = Infinity; maxLat = -Infinity; minLon = Infinity; maxLon = -Infinity;
+                parts.forEach(rings => rings.forEach(ring => ring.forEach(pt => {
+                    if (pt[0] < minLon) minLon = pt[0];
+                    if (pt[0] > maxLon) maxLon = pt[0];
+                    if (pt[1] < minLat) minLat = pt[1];
+                    if (pt[1] > maxLat) maxLat = pt[1];
+                })));
+            }
+            return { minLat, maxLat, minLon, maxLon };
         }
 
         function syncAreaInputsFromState() {
@@ -983,7 +2149,7 @@
                 document.getElementById('input-rect-maxLat').value = Number(area.maxLat).toFixed(6);
                 document.getElementById('input-rect-minLon').value = Number(area.minLon).toFixed(6);
                 document.getElementById('input-rect-maxLon').value = Number(area.maxLon).toFixed(6);
-            } else {
+            } else if (area.type === 'circle') {
                 document.getElementById('input-circle-lat').value = Number(area.centerLat).toFixed(6);
                 document.getElementById('input-circle-lon').value = Number(area.centerLon).toFixed(6);
                 const unitEl = document.getElementById('input-circle-unit');
@@ -995,6 +2161,11 @@
                     unitEl.value = 'm';
                     valEl.value = Math.round(area.radiusMeters);
                 }
+            } else if (area.type === 'polygon') {
+                const vCount = countPolygonVertices(area);
+                const parts = getPolygonParts(area);
+                const partsTxt = parts.length > 1 ? ` • ${parts.length} částí` : '';
+                document.getElementById('poly-stats-badge').textContent = `${vCount.toLocaleString('cs-CZ')} bodů${partsTxt}`;
             }
         }
 
@@ -1042,7 +2213,7 @@
                 type: 'circle',
                 centerLat: lat,
                 centerLon: lon,
-                radiusMeters: Math.min(radiusMeters, 5000000) // Max 5000 km
+                radiusMeters: Math.min(radiusMeters, 5000000)
             };
 
             updateAreaOnMap();
@@ -1051,7 +2222,6 @@
 
         function setRectFromViewport() {
             const bounds = map.getBounds();
-            // Mírné zmenšení (o 10 %), aby obdélník nebyl nalepený na okrajích obrazovky
             const latSpan = bounds.getNorth() - bounds.getSouth();
             const lonSpan = bounds.getEast() - bounds.getWest();
 
@@ -1088,6 +2258,251 @@
 
         /**
          * ============================================================================
+         * TEXTOVÝ IMPORT A EXPORT POLYGONŮ (GEOJSON, WKT, SEZNAM SOUŘADNIC)
+         * ============================================================================
+         */
+        function openPolyImportModal() {
+            state.parsedImportPoly = null;
+            document.getElementById('poly-import-textarea').value = '';
+            document.getElementById('poly-import-preview').className = 'text-xs px-3 py-2 rounded-xl bg-slate-100 text-slate-600 font-medium';
+            document.getElementById('poly-import-preview').textContent = 'Zadejte nebo vložte data pro náhled...';
+            document.getElementById('btn-apply-poly-import').disabled = true;
+            document.getElementById('poly-import-modal').classList.remove('hidden');
+            setTimeout(() => document.getElementById('poly-import-textarea').focus(), 50);
+        }
+
+        function closePolyImportModal() {
+            document.getElementById('poly-import-modal').classList.add('hidden');
+        }
+
+        function loadPolyFileToTextarea(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                document.getElementById('poly-import-textarea').value = e.target.result;
+                previewImportedPolygon();
+            };
+            reader.readAsText(file);
+            event.target.value = '';
+        }
+
+        function normalizeRing(rawRing) {
+            if (!Array.isArray(rawRing)) return [];
+            const out = [];
+            for (let i = 0; i < rawRing.length; i++) {
+                const pt = rawRing[i];
+                if (!pt || pt.length < 2) continue;
+                const lon = Number(pt[0]);
+                const lat = Number(pt[1]);
+                if (!isNaN(lon) && !isNaN(lat) && lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180) {
+                    out.push([lon, lat]);
+                }
+            }
+            // Odstranění duplicitního uzavíracího bodu na konci
+            if (out.length > 3) {
+                const first = out[0], last = out[out.length - 1];
+                if (first[0] === last[0] && first[1] === last[1]) {
+                    out.pop();
+                }
+            }
+            return out;
+        }
+
+        function parsePolygonFromText(text, plainOrder = 'latlon') {
+            const trimmed = text.trim();
+            if (!trimmed) return null;
+
+            // 1. Pokus o JSON / GeoJSON
+            if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+                try {
+                    const obj = JSON.parse(trimmed);
+                    const multiParts = [];
+
+                    const extractGeometry = (geom) => {
+                        if (!geom) return;
+                        if (geom.type === 'Polygon' && Array.isArray(geom.coordinates)) {
+                            const rings = geom.coordinates.map(normalizeRing).filter(r => r.length >= 3);
+                            if (rings.length > 0) multiParts.push(rings);
+                        } else if (geom.type === 'MultiPolygon' && Array.isArray(geom.coordinates)) {
+                            geom.coordinates.forEach(poly => {
+                                const rings = poly.map(normalizeRing).filter(r => r.length >= 3);
+                                if (rings.length > 0) multiParts.push(rings);
+                            });
+                        } else if (geom.type === 'GeometryCollection' && Array.isArray(geom.geometries)) {
+                            geom.geometries.forEach(extractGeometry);
+                        }
+                    };
+
+                    if (obj.type === 'FeatureCollection' && Array.isArray(obj.features)) {
+                        obj.features.forEach(f => extractGeometry(f.geometry));
+                    } else if (obj.type === 'Feature') {
+                        extractGeometry(obj.geometry);
+                    } else if (obj.type) {
+                        extractGeometry(obj);
+                    } else if (Array.isArray(obj)) {
+                        // Pole souřadnic [[a, b], ...] nebo [[[a, b], ...]]
+                        const flatSource = (Array.isArray(obj[0]) && Array.isArray(obj[0][0])) ? obj[0] : obj;
+                        const mapped = flatSource.map(p => plainOrder === 'latlon' ? [p[1], p[0]] : [p[0], p[1]]);
+                        const ring = normalizeRing(mapped);
+                        if (ring.length >= 3) multiParts.push([ring]);
+                    }
+
+                    if (multiParts.length > 0) {
+                        return buildPolygonAreaFromParts(multiParts);
+                    }
+                } catch (e) {
+                    // Pokračujeme k WKT nebo prostému textu
+                }
+            }
+
+            // 2. Pokus o WKT (POLYGON / MULTIPOLYGON)
+            const upper = trimmed.toUpperCase();
+            if (upper.includes('POLYGON')) {
+                const cleaned = trimmed.replace(/^SRID=\d+;/i, '').trim();
+                const multiParts = [];
+
+                const parseWktRings = (polyBody) => {
+                    const rings = [];
+                    const ringMatches = polyBody.match(/\([^()]+\)/g);
+                    if (!ringMatches) return rings;
+                    for (const rm of ringMatches) {
+                        const inner = rm.slice(1, -1);
+                        const coords = inner.split(',').map(pair => {
+                            const nums = pair.trim().split(/\s+/).map(Number);
+                            return [nums[0], nums[1]]; // WKT je vždy lon lat
+                        });
+                        const ring = normalizeRing(coords);
+                        if (ring.length >= 3) rings.push(ring);
+                    }
+                    return rings;
+                };
+
+                if (/^MULTIPOLYGON/i.test(cleaned)) {
+                    const body = cleaned.replace(/^MULTIPOLYGON\s*\(/i, '').replace(/\)\s*$/, '');
+                    // Rozdělení jednotlivých polygonů na úrovni závorek
+                    let depth = 0, start = -1;
+                    for (let i = 0; i < body.length; i++) {
+                        if (body[i] === '(') {
+                            if (depth === 0) start = i;
+                            depth++;
+                        } else if (body[i] === ')') {
+                            depth--;
+                            if (depth === 0 && start !== -1) {
+                                const rings = parseWktRings(body.slice(start, i + 1));
+                                if (rings.length > 0) multiParts.push(rings);
+                                start = -1;
+                            }
+                        }
+                    }
+                } else {
+                    const rings = parseWktRings(cleaned);
+                    if (rings.length > 0) multiParts.push(rings);
+                }
+
+                if (multiParts.length > 0) {
+                    return buildPolygonAreaFromParts(multiParts);
+                }
+            }
+
+            // 3. Seznam souřadnic v prostém textu (řádky nebo odděleno středníky)
+            const lines = trimmed.split(/[\n;]+/);
+            const rawCoords = [];
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i].trim();
+                if (!line) continue;
+                const matches = line.match(/-?\d+(?:\.\d+)?/g);
+                if (matches && matches.length >= 2) {
+                    const a = parseFloat(matches[0]);
+                    const b = parseFloat(matches[1]);
+                    rawCoords.push(plainOrder === 'latlon' ? [b, a] : [a, b]);
+                }
+            }
+            const ring = normalizeRing(rawCoords);
+            if (ring.length >= 3) {
+                return buildPolygonAreaFromParts([[ring]]);
+            }
+
+            return null;
+        }
+
+        function buildPolygonAreaFromParts(multiParts) {
+            if (multiParts.length === 1 && multiParts[0].length === 1) {
+                return {
+                    name: 'Importovaný polygon',
+                    type: 'polygon',
+                    coordinates: multiParts[0][0]
+                };
+            }
+            if (multiParts.length === 1) {
+                return {
+                    name: 'Importovaný polygon',
+                    type: 'polygon',
+                    coordinates: multiParts[0][0],
+                    holes: multiParts[0].slice(1)
+                };
+            }
+            return {
+                name: 'Importovaný multipolygon',
+                type: 'polygon',
+                multiCoordinates: multiParts
+            };
+        }
+
+        function previewImportedPolygon() {
+            const text = document.getElementById('poly-import-textarea').value;
+            const order = document.getElementById('poly-import-order').value;
+            const previewEl = document.getElementById('poly-import-preview');
+            const applyBtn = document.getElementById('btn-apply-poly-import');
+
+            if (!text.trim()) {
+                state.parsedImportPoly = null;
+                previewEl.className = 'text-xs px-3 py-2 rounded-xl bg-slate-100 text-slate-600 font-medium';
+                previewEl.textContent = 'Zadejte nebo vložte data pro náhled...';
+                applyBtn.disabled = true;
+                return;
+            }
+
+            const parsed = parsePolygonFromText(text, order);
+            if (!parsed) {
+                state.parsedImportPoly = null;
+                previewEl.className = 'text-xs px-3 py-2 rounded-xl bg-red-50 text-red-700 border border-red-200 font-medium';
+                previewEl.textContent = 'Nepodařilo se rozpoznat platný polygon (potřeba alespoň 3 body v rozsahu WGS84).';
+                applyBtn.disabled = true;
+                return;
+            }
+
+            state.parsedImportPoly = parsed;
+            const vCount = countPolygonVertices(parsed);
+            const parts = getPolygonParts(parsed).length;
+            const areaKm2 = calculateAreaKm2(parsed);
+            previewEl.className = 'text-xs px-3 py-2 rounded-xl bg-emerald-50 text-emerald-800 border border-emerald-200 font-medium';
+            previewEl.textContent = `Rozpoznáno: ${parts > 1 ? parts + ' částí, ' : ''}${vCount.toLocaleString('cs-CZ')} bodů, plocha cca ${areaKm2 < 1 ? (areaKm2 * 100).toFixed(1) + ' ha' : areaKm2.toFixed(2) + ' km²'}.`;
+            applyBtn.disabled = false;
+        }
+
+        function applyImportedPolygon() {
+            if (!state.parsedImportPoly) return;
+            stopPolygonEditMode(false);
+            state.activeArea = { ...state.parsedImportPoly };
+            closePolyImportModal();
+            setAreaShape('polygon');
+            state.activeArea = { ...state.parsedImportPoly };
+            syncAreaInputsFromState();
+            updateAreaOnMap();
+            fitActiveArea();
+            showToast(`Polygon načten (${countPolygonVertices(state.activeArea).toLocaleString('cs-CZ')} bodů).`, 'success');
+        }
+
+        function copyPolygonGeoJSON() {
+            if (!state.activeArea || state.activeArea.type !== 'polygon') return;
+            const geo = createPolygonGeoJSON(state.activeArea);
+            const text = JSON.stringify(geo);
+            copyTextToClipboard(text, 'GeoJSON polygonu zkopírován do schránky.');
+        }
+
+        /**
+         * ============================================================================
          * ROVNOMĚRNÉ GENEROVÁNÍ NÁHODNÝCH SOUŘADNIC NA SFÉŘE
          * ============================================================================
          */
@@ -1098,56 +2513,59 @@
             let lat, lon;
 
             if (area.type === 'rectangle') {
-                // Rovnoměrné rozdělení na sférickém obdélníku:
-                // lon ~ U(minLon, maxLon)
-                // lat = arcsin( U(sin(minLat), sin(maxLat)) )
                 const u1 = Math.random();
                 const u2 = Math.random();
-
                 lon = area.minLon + u1 * (area.maxLon - area.minLon);
-
                 const sinMin = Math.sin(toRad(area.minLat));
                 const sinMax = Math.sin(toRad(area.maxLat));
                 const sinLat = sinMin + u2 * (sinMax - sinMin);
                 lat = toDeg(Math.asin(Math.max(-1, Math.min(1, sinLat))));
-            } else {
-                // Rovnoměrné rozdělení na ploše kruhu na sféře:
-                // theta ~ U(0, 2*PI)
-                // r = R * sqrt(U(0, 1))
+            } else if (area.type === 'circle') {
                 const theta = Math.random() * 2 * Math.PI;
                 const distance = area.radiusMeters * Math.sqrt(Math.random());
                 const pt = destinationPoint(area.centerLat, area.centerLon, theta, distance);
                 lat = pt.lat;
                 lon = pt.lon;
+            } else if (area.type === 'polygon') {
+                const pt = sampleRandomPointInPolygon(area);
+                if (!pt) {
+                    showToast('Polygon má nulovou plochu nebo je neplatný.', 'error');
+                    return;
+                }
+                lat = pt.lat;
+                lon = pt.lon;
             }
 
             state.generatedPoint = { lat, lon };
-            displayGeneratedPoint();
 
-            // Přepneme na záložku Generátor, pokud uživatel losoval z jiné záložky
-            switchTab('generator');
+            // Uložení do historie
+            addHistoryEntry(lat, lon, area);
+
+            // Aktualizace UI karty v záložce Generátor (bez nuceného rozbalení panelu)
+            switchTab('generator', false);
+            displayGeneratedPoint(true);
+
+            // Po losování se panel zmenší a zobrazí se vygenerovaný bod na mapě
+            if (window.innerWidth < 768) {
+                setMobileSheetMinimized(true);
+            }
         }
 
-        function displayGeneratedPoint() {
+        function displayGeneratedPoint(forceFly = false) {
             const pt = state.generatedPoint;
             if (!pt) return;
 
             const latStr = pt.lat.toFixed(6);
             const lonStr = pt.lon.toFixed(6);
-
-            // Přesný formát URL pro Mapy.com: center={lon},{lat}
             const mapyUrl = `https://mapy.com/fnc/v1/showmap?mapset=outdoor&center=${lonStr},${latStr}&marker=true`;
 
-            // Aktualizace UI karty výsledku
             document.getElementById('result-placeholder').classList.add('hidden');
             document.getElementById('result-card').classList.remove('hidden');
 
             document.getElementById('result-coords-text').textContent = `${latStr}, ${lonStr}`;
-            const linkEl = document.getElementById('result-mapy-link');
-            linkEl.href = mapyUrl;
+            document.getElementById('result-mapy-link').href = mapyUrl;
             document.getElementById('result-url-preview').textContent = mapyUrl;
 
-            // Vygenerování QR kódu pomocí QRious
             if (!qrInstance) {
                 qrInstance = new QRious({
                     element: document.getElementById('qr-canvas'),
@@ -1159,7 +2577,23 @@
             }
             qrInstance.value = mapyUrl;
 
-            // Vykreslení nebo přesun markeru na mapě
+            const popupHtml = `
+                <div class="p-1 text-xs space-y-1.5 min-w-[175px]">
+                    <div class="font-bold text-slate-900">Vygenerovaný cíl</div>
+                    <div class="font-mono text-slate-600">${latStr}, ${lonStr}</div>
+                    <div class="flex flex-col gap-1 pt-1">
+                        <a href="${mapyUrl}" target="_blank" rel="noopener noreferrer" class="text-center py-1 px-2 rounded-lg bg-emerald-600 text-white font-semibold hover:bg-emerald-700">Otevřít v Mapy.com</a>
+                        <button onclick="openDetailFromPopup()" class="md:hidden text-center py-1 px-2 rounded-lg bg-slate-100 text-slate-700 font-semibold hover:bg-slate-200">Zobrazit QR a detail</button>
+                    </div>
+                </div>
+            `;
+
+            if (!targetPopup) {
+                targetPopup = new maplibregl.Popup({ offset: 32, closeButton: true }).setHTML(popupHtml);
+            } else {
+                targetPopup.setHTML(popupHtml);
+            }
+
             if (!targetMarker) {
                 const el = document.createElement('div');
                 el.className = 'target-marker';
@@ -1169,42 +2603,63 @@
                         <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/>
                     </svg>
                 `;
+                el.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    suppressNextMapClick = true;
+                });
                 targetMarker = new maplibregl.Marker({ element: el, anchor: 'bottom' })
                     .setLngLat([pt.lon, pt.lat])
+                    .setPopup(targetPopup)
                     .addTo(map);
             } else {
-                // Restart animace špendlíku
                 const el = targetMarker.getElement();
                 el.style.animation = 'none';
-                el.offsetHeight; // trigger reflow
+                el.offsetHeight;
                 el.style.animation = null;
                 targetMarker.setLngLat([pt.lon, pt.lat]);
             }
 
-            // Plynulý přesun kamery, pokud je bod mimo aktuální zorné pole nebo je zoom příliš malý
-            const currentBounds = map.getBounds();
-            if (!currentBounds.contains([pt.lon, pt.lat]) || map.getZoom() < 9) {
+            if (forceFly) {
                 flyToGeneratedPoint();
+            } else {
+                const currentBounds = map.getBounds();
+                if (!currentBounds.contains([pt.lon, pt.lat]) || map.getZoom() < 9) {
+                    flyToGeneratedPoint();
+                }
             }
+        }
+
+        function openDetailFromPopup() {
+            switchTab('generator', true);
+            if (targetPopup) targetPopup.remove();
         }
 
         function flyToGeneratedPoint() {
             if (!state.generatedPoint || !map) return;
+            const padding = window.innerWidth < 768
+                ? { top: 60, bottom: 96, left: 20, right: 20 }
+                : { top: 40, bottom: 40, left: 40, right: 40 };
+
             map.flyTo({
                 center: [state.generatedPoint.lon, state.generatedPoint.lat],
                 zoom: Math.max(map.getZoom(), 13),
+                padding,
                 speed: 1.4,
                 essential: true
             });
         }
 
-        /**
-         * Bezpečné zkopírování souřadnic do schránky (včetně fallbacku pro iframe)
-         */
-        function copyCoordinates() {
-            if (!state.generatedPoint) return;
-            const text = `${state.generatedPoint.lat.toFixed(6)}, ${state.generatedPoint.lon.toFixed(6)}`;
+        function copyTextToClipboard(text, successMsg) {
+            if (navigator.clipboard && window.isSecureContext) {
+                navigator.clipboard.writeText(text).then(() => {
+                    showToast(successMsg, 'success');
+                }).catch(() => fallbackCopy(text, successMsg));
+            } else {
+                fallbackCopy(text, successMsg);
+            }
+        }
 
+        function fallbackCopy(text, successMsg) {
             const textArea = document.createElement('textarea');
             textArea.value = text;
             textArea.style.position = 'fixed';
@@ -1212,14 +2667,171 @@
             document.body.appendChild(textArea);
             textArea.focus();
             textArea.select();
-
             try {
                 document.execCommand('copy');
-                showToast(`Zkopírováno: ${text}`, 'success');
+                showToast(successMsg, 'success');
             } catch (err) {
                 showToast('Kopírování se nezdařilo.', 'error');
             }
             document.body.removeChild(textArea);
+        }
+
+        function copyCoordinates() {
+            if (!state.generatedPoint) return;
+            const text = `${state.generatedPoint.lat.toFixed(6)}, ${state.generatedPoint.lon.toFixed(6)}`;
+            copyTextToClipboard(text, `Zkopírováno: ${text}`);
+        }
+
+        /**
+         * ============================================================================
+         * HISTORIE VYGENEROVANÝCH BODŮ
+         * ============================================================================
+         */
+        function loadHistory() {
+            try {
+                const raw = localStorage.getItem(HISTORY_STORAGE_KEY);
+                if (raw) {
+                    const parsed = JSON.parse(raw);
+                    if (Array.isArray(parsed)) state.history = parsed;
+                }
+            } catch (e) {
+                state.history = [];
+            }
+            renderHistoryList();
+        }
+
+        function persistHistory() {
+            try {
+                localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(state.history));
+            } catch (e) {
+                showToast('Nepodařilo se uložit historii do prohlížeče.', 'error');
+            }
+            renderHistoryList();
+            updateHistoryOnMap();
+        }
+
+        function addHistoryEntry(lat, lon, area) {
+            const entry = {
+                id: 'hist-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
+                lat,
+                lon,
+                areaName: (area && area.name) ? area.name : 'Neznámá oblast',
+                createdAt: new Date().toISOString()
+            };
+            state.history.unshift(entry);
+            persistHistory();
+        }
+
+        function selectHistoryItem(id, minimizeOnMobile = true) {
+            const item = state.history.find(h => h.id === id);
+            if (!item) return;
+
+            state.generatedPoint = { lat: item.lat, lon: item.lon };
+            switchTab('generator', false);
+            displayGeneratedPoint(true);
+
+            if (minimizeOnMobile && window.innerWidth < 768) {
+                setMobileSheetMinimized(true);
+            }
+        }
+
+        function requestDeleteHistoryItem(id) {
+            const item = state.history.find(h => h.id === id);
+            if (!item) return;
+            openConfirmModal(
+                'Smazat bod z historie',
+                `Opravdu chcete odstranit vygenerovaný bod (${item.lat.toFixed(5)}, ${item.lon.toFixed(5)}) z historie?`,
+                () => {
+                    state.history = state.history.filter(h => h.id !== id);
+                    persistHistory();
+                    showToast('Bod byl odstraněn z historie.', 'info');
+                }
+            );
+        }
+
+        function requestClearAllHistory() {
+            if (state.history.length === 0) return;
+            openConfirmModal(
+                'Smazat celou historii',
+                `Opravdu chcete nevratně smazat celou historii vygenerovaných bodů (${state.history.length} záznamů)?`,
+                () => {
+                    state.history = [];
+                    persistHistory();
+                    showToast('Historie byla kompletně smazána.', 'info');
+                }
+            );
+        }
+
+        function renderHistoryList() {
+            const container = document.getElementById('history-list');
+            const badge = document.getElementById('history-count-badge');
+            const clearBtn = document.getElementById('btn-clear-history');
+
+            badge.textContent = state.history.length;
+            clearBtn.disabled = state.history.length === 0;
+            container.innerHTML = '';
+
+            if (state.history.length === 0) {
+                container.innerHTML = `
+                    <div class="text-center py-8 px-4 bg-slate-50 rounded-2xl border border-dashed border-slate-300">
+                        <p class="text-sm font-medium text-slate-600">Historie je zatím prázdná.</p>
+                        <p class="text-xs text-slate-400 mt-1">Každý vylosovaný bod se sem automaticky uloží.</p>
+                    </div>
+                `;
+                return;
+            }
+
+            state.history.forEach(item => {
+                const dateStr = formatDateCZ(item.createdAt);
+                const latStr = item.lat.toFixed(6);
+                const lonStr = item.lon.toFixed(6);
+                const mapyUrl = `https://mapy.com/fnc/v1/showmap?mapset=outdoor&center=${lonStr},${latStr}&marker=true`;
+
+                const card = document.createElement('div');
+                card.className = 'p-3 rounded-2xl border border-slate-200 bg-white hover:border-slate-300 transition flex items-center justify-between gap-2';
+                card.innerHTML = `
+                    <button onclick="selectHistoryItem('${item.id}')" class="flex-1 text-left min-w-0">
+                        <div class="font-mono text-xs sm:text-sm font-bold text-slate-800">${latStr}, ${lonStr}</div>
+                        <div class="text-xs text-slate-500 truncate mt-0.5">${escapeHtml(item.areaName)} • ${dateStr}</div>
+                    </button>
+                    <div class="flex items-center gap-1 shrink-0">
+                        <a href="${mapyUrl}" target="_blank" rel="noopener noreferrer" title="Otevřít v Mapy.com" class="w-9 h-9 rounded-xl bg-emerald-50 text-emerald-700 hover:bg-emerald-100 flex items-center justify-center font-bold text-xs transition">
+                            M
+                        </a>
+                        <button onclick="requestDeleteHistoryItem('${item.id}')" title="Smazat z historie" class="w-9 h-9 rounded-xl text-slate-400 hover:text-red-600 hover:bg-red-50 flex items-center justify-center transition">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                        </button>
+                    </div>
+                `;
+                container.appendChild(card);
+            });
+        }
+
+        function updateHistoryOnMap() {
+            if (!map || !map.getSource('history-points')) return;
+            const show = document.getElementById('toggle-history-map').checked;
+            if (!show) {
+                map.getSource('history-points').setData({ type: 'FeatureCollection', features: [] });
+                return;
+            }
+            const features = state.history.map(item => ({
+                type: 'Feature',
+                properties: { id: item.id },
+                geometry: { type: 'Point', coordinates: [item.lon, item.lat] }
+            }));
+            map.getSource('history-points').setData({ type: 'FeatureCollection', features });
+        }
+
+        function formatDateCZ(iso) {
+            try {
+                const d = new Date(iso);
+                return d.toLocaleString('cs-CZ', {
+                    day: 'numeric', month: 'numeric', year: 'numeric',
+                    hour: '2-digit', minute: '2-digit'
+                });
+            } catch (e) {
+                return '';
+            }
         }
 
         /**
@@ -1255,7 +2867,7 @@
             try {
                 localStorage.setItem(STORAGE_KEY, JSON.stringify(state.savedAreas));
             } catch (e) {
-                showToast('Nepodařilo se uložit data do prohlížeče.', 'error');
+                showToast('Nepodařilo se uložit oblast (možná překročena kapacita prohlížeče).', 'error');
             }
             renderSavedAreasList();
         }
@@ -1290,16 +2902,11 @@
             const found = state.savedAreas.find(a => a.id === id);
             if (!found) return;
 
+            stopPolygonEditMode(false);
+            state.activeArea = { ...found };
+            setAreaShape(found.type);
             state.activeArea = { ...found };
 
-            // Aktualizace přepínače tvaru na záložce Oblast
-            if (found.type === 'rectangle') {
-                setAreaShape('rectangle');
-            } else {
-                setAreaShape('circle');
-            }
-            // Obnovíme přesné hodnoty uložené oblasti (setAreaShape by mohl přepočítat)
-            state.activeArea = { ...found };
             syncAreaInputsFromState();
             updateAreaOnMap();
             fitActiveArea();
@@ -1312,12 +2919,20 @@
                 showToast('Musí zůstat alespoň jedna uložená oblast.', 'error');
                 return;
             }
-            state.savedAreas = state.savedAreas.filter(a => a.id !== id);
-            persistSavedAreas();
-            showToast('Oblast byla odstraněna.', 'info');
+            const found = state.savedAreas.find(a => a.id === id);
+            if (!found) return;
+
+            openConfirmModal(
+                'Smazat uloženou oblast',
+                `Opravdu chcete odstranit uloženou oblast "${found.name}"?`,
+                () => {
+                    state.savedAreas = state.savedAreas.filter(a => a.id !== id);
+                    persistSavedAreas();
+                    showToast('Oblast byla odstraněna.', 'info');
+                }
+            );
         }
 
-        // Modální okno pro přejmenování
         function openRenameModal(id) {
             const found = state.savedAreas.find(a => a.id === id);
             if (!found) return;
@@ -1350,19 +2965,43 @@
             closeRenameModal();
         }
 
+        function openConfirmModal(title, message, onConfirm) {
+            document.getElementById('confirm-modal-title').textContent = title;
+            document.getElementById('confirm-modal-message').textContent = message;
+            state.confirmCallback = onConfirm;
+            document.getElementById('confirm-modal').classList.remove('hidden');
+        }
+
+        function closeConfirmModal() {
+            state.confirmCallback = null;
+            document.getElementById('confirm-modal').classList.add('hidden');
+        }
+
+        function executeConfirmModal() {
+            const cb = state.confirmCallback;
+            closeConfirmModal();
+            if (typeof cb === 'function') cb();
+        }
+
         function renderSavedAreasList() {
             const container = document.getElementById('saved-areas-list');
             const badge = document.getElementById('saved-count-badge');
             badge.textContent = state.savedAreas.length;
-
             container.innerHTML = '';
 
             state.savedAreas.forEach(area => {
                 const isSelected = state.activeArea && state.activeArea.id === area.id;
                 const areaKm2 = calculateAreaKm2(area);
-                const subtitle = area.type === 'rectangle'
-                    ? `Obdélník • ${areaKm2.toFixed(1)} km²`
-                    : `Kruh (r = ${(area.radiusMeters / 1000).toFixed(2)} km) • ${areaKm2.toFixed(1)} km²`;
+                const areaStr = areaKm2 < 1 ? `${(areaKm2 * 100).toFixed(1)} ha` : `${areaKm2.toFixed(1)} km²`;
+
+                let subtitle = '';
+                if (area.type === 'rectangle') {
+                    subtitle = `Obdélník • ${areaStr}`;
+                } else if (area.type === 'circle') {
+                    subtitle = `Kruh (r = ${(area.radiusMeters / 1000).toFixed(2)} km) • ${areaStr}`;
+                } else {
+                    subtitle = `Polygon (${countPolygonVertices(area).toLocaleString('cs-CZ')} bodů) • ${areaStr}`;
+                }
 
                 const card = document.createElement('div');
                 card.className = `p-3 rounded-2xl border transition flex items-center justify-between gap-2 ${
@@ -1418,7 +3057,7 @@
 
                     let addedCount = 0;
                     imported.forEach(item => {
-                        if (item.name && (item.type === 'rectangle' || item.type === 'circle')) {
+                        if (item.name && (item.type === 'rectangle' || item.type === 'circle' || item.type === 'polygon')) {
                             state.savedAreas.push({
                                 ...item,
                                 id: 'imp-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6)
@@ -1446,27 +3085,34 @@
          * UI NAVIGACE, ZÁLOŽKY A MOBILNÍ BOTTOM SHEET
          * ============================================================================
          */
-        function switchTab(tabName) {
-            const tabs = ['generator', 'area', 'saved'];
+        function switchTab(tabName, expandSheet = true) {
+            const tabs = ['generator', 'area', 'saved', 'history'];
             tabs.forEach(t => {
                 const section = document.getElementById(`tab-${t}`);
                 const btn = document.getElementById(`tab-btn-${t}`);
                 if (t === tabName) {
                     section.classList.remove('hidden');
-                    btn.className = 'tab-btn min-h-[42px] rounded-xl text-xs sm:text-sm font-semibold transition flex items-center justify-center gap-1.5 bg-white text-brand-700 shadow-sm';
+                    btn.className = 'tab-btn min-h-[42px] rounded-xl text-[11px] sm:text-xs font-semibold transition flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-1 bg-white text-brand-700 shadow-sm px-1';
                 } else {
                     section.classList.add('hidden');
-                    btn.className = 'tab-btn min-h-[42px] rounded-xl text-xs sm:text-sm font-semibold transition flex items-center justify-center gap-1.5 text-slate-600 hover:text-slate-900';
+                    btn.className = 'tab-btn min-h-[42px] rounded-xl text-[11px] sm:text-xs font-semibold transition flex flex-col sm:flex-row items-center justify-center gap-0.5 sm:gap-1 text-slate-600 hover:text-slate-900 px-1';
                 }
             });
 
-            // Při přepnutí záložky na mobilu zajistíme rozbalení panelu
-            if (window.innerWidth < 768 && state.isMobileSheetMinimized) {
+            if (tabName === 'area' && state.activeArea) {
+                // Ujistit se, že formulář odpovídá aktivnímu typu oblasti
+                const shape = state.activeArea.type;
+                document.getElementById('form-rectangle').classList.toggle('hidden', shape !== 'rectangle');
+                document.getElementById('form-circle').classList.toggle('hidden', shape !== 'circle');
+                document.getElementById('form-polygon').classList.toggle('hidden', shape !== 'polygon');
+            }
+
+            if (expandSheet && window.innerWidth < 768 && state.isMobileSheetMinimized) {
                 setMobileSheetMinimized(false);
             }
         }
 
-        function toggleMobileSheet(event) {
+        function toggleMobileSheet() {
             if (window.innerWidth >= 768) return;
             setMobileSheetMinimized(!state.isMobileSheetMinimized);
         }
@@ -1489,9 +3135,17 @@
             if (!area) return;
 
             const areaKm2 = calculateAreaKm2(area);
-            const detailsText = area.type === 'rectangle'
-                ? `Obdélník • cca ${areaKm2 < 1 ? (areaKm2 * 100).toFixed(1) + ' ha' : areaKm2.toFixed(1) + ' km²'}`
-                : `Kruh (r = ${area.radiusMeters >= 1000 ? (area.radiusMeters / 1000).toFixed(2) + ' km' : area.radiusMeters + ' m'}) • cca ${areaKm2 < 1 ? (areaKm2 * 100).toFixed(1) + ' ha' : areaKm2.toFixed(1) + ' km²'}`;
+            const areaStr = areaKm2 < 1 ? `${(areaKm2 * 100).toFixed(1)} ha` : `${areaKm2.toFixed(1)} km²`;
+
+            let detailsText = '';
+            if (area.type === 'rectangle') {
+                detailsText = `Obdélník • cca ${areaStr}`;
+            } else if (area.type === 'circle') {
+                const rStr = area.radiusMeters >= 1000 ? `${(area.radiusMeters / 1000).toFixed(2)} km` : `${area.radiusMeters} m`;
+                detailsText = `Kruh (r = ${rStr}) • cca ${areaStr}`;
+            } else {
+                detailsText = `Polygon (${countPolygonVertices(area).toLocaleString('cs-CZ')} bodů) • cca ${areaStr}`;
+            }
 
             document.getElementById('active-area-subtitle').textContent = `Aktivní: ${area.name}`;
             document.getElementById('gen-area-name').textContent = area.name;
@@ -1525,9 +3179,9 @@
             return div.innerHTML;
         }
 
-        // Inicializace po načtení okna
         window.addEventListener('DOMContentLoaded', () => {
             loadSavedAreas();
+            loadHistory();
             initMap();
         });
     </script>
