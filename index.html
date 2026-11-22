@@ -1,0 +1,1535 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Náhodný cíl na mapě</title>
+    
+    <!-- Google Fonts: Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                    colors: {
+                        brand: {
+                            50: '#f0fdf4',
+                            100: '#dcfce7',
+                            500: '#22c55e',
+                            600: '#16a34a',
+                            700: '#15803d',
+                            800: '#166534',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- MapLibre GL JS v4.7.1 -->
+    <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
+    <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+
+    <!-- QRious pro rychlé a spolehlivé generování QR kódů na Canvas -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrious/4.0.2/qrious.min.js"></script>
+
+    <style>
+        /* Základní reset a proměnné */
+        :root {
+            --panel-bg: rgba(255, 255, 255, 0.97);
+            --accent: #16a34a;
+        }
+
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            font-family: 'Inter', sans-serif;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        #map {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+
+        /* Vlastní styl pro MapLibre ovládací prvky */
+        .maplibregl-ctrl-top-right {
+            top: 12px;
+            right: 12px;
+        }
+
+        /* Kurzor v režimu kreslení */
+        .drawing-mode #map,
+        .drawing-mode .maplibregl-canvas-container {
+            cursor: crosshair !important;
+        }
+
+        /* Animace vlastního markeru na mapě */
+        .target-marker {
+            width: 36px;
+            height: 36px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transform-origin: bottom center;
+            animation: dropPin 0.45s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+
+        @keyframes dropPin {
+            0% { transform: translateY(-40px) scale(0.5); opacity: 0; }
+            100% { transform: translateY(0) scale(1); opacity: 1; }
+        }
+
+        /* Pulse efekt pod špendlíkem */
+        .target-pulse {
+            position: absolute;
+            bottom: -4px;
+            width: 16px;
+            height: 16px;
+            background: rgba(220, 38, 38, 0.4);
+            border-radius: 50%;
+            animation: pulseRing 2s infinite;
+            z-index: -1;
+        }
+
+        @keyframes pulseRing {
+            0% { transform: scale(0.8); opacity: 0.9; }
+            100% { transform: scale(2.6); opacity: 0; }
+        }
+
+        /* Skrytí scrollbaru uvnitř panelu, ale zachování scrollování */
+        .custom-scroll::-webkit-scrollbar {
+            width: 6px;
+        }
+        .custom-scroll::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .custom-scroll::-webkit-scrollbar-thumb {
+            background-color: rgba(156, 163, 175, 0.5);
+            border-radius: 20px;
+        }
+
+        /* Responzivní Bottom Sheet / Sidebar */
+        @media (max-width: 767px) {
+            #control-panel {
+                position: fixed;
+                bottom: 0;
+                left: 0;
+                right: 0;
+                max-height: 82vh;
+                border-top-left-radius: 1.25rem;
+                border-top-right-radius: 1.25rem;
+                transition: transform 0.3s cubic-bezier(0.25, 1, 0.5, 1);
+                z-index: 20;
+            }
+            #control-panel.minimized {
+                transform: translateY(calc(100% - 76px));
+            }
+        }
+
+        @media (min-width: 768px) {
+            #map {
+                left: 400px;
+                width: calc(100% - 400px);
+            }
+            #control-panel {
+                position: fixed;
+                top: 0;
+                bottom: 0;
+                left: 0;
+                width: 400px;
+                z-index: 20;
+                border-right: 1px solid #e5e7eb;
+            }
+        }
+    </style>
+</head>
+<body class="bg-slate-100 text-slate-800 antialiased select-none md:select-auto">
+
+    <!-- Horní plovoucí lišta na mapě (přepínač mapového podkladu + indikátor kreslení) -->
+    <div id="map-overlays" class="fixed top-3 left-3 md:left-[416px] right-14 z-10 flex flex-wrap items-center gap-2 pointer-events-none">
+        <!-- Přepínač mapových podkladů -->
+        <div class="pointer-events-auto inline-flex bg-white/95 backdrop-blur shadow-md rounded-xl p-1 border border-slate-200/80">
+            <button id="btn-layer-osm" onclick="setBaseLayer('osm')" class="px-3 py-1.5 text-xs font-semibold rounded-lg transition bg-brand-600 text-white shadow-sm">
+                Základní (OSM)
+            </button>
+            <button id="btn-layer-topo" onclick="setBaseLayer('topo')" class="px-3 py-1.5 text-xs font-semibold rounded-lg transition text-slate-600 hover:bg-slate-100">
+                Turistická (Topo)
+            </button>
+        </div>
+
+        <!-- Výzva při kreslení na mapě -->
+        <div id="draw-banner" class="hidden pointer-events-auto flex items-center gap-2 bg-amber-500 text-white px-3.5 py-2 rounded-xl shadow-lg text-xs sm:text-sm font-medium animate-pulse">
+            <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
+            <span id="draw-banner-text">Táhněte prstem nebo myší po mapě...</span>
+            <button onclick="cancelDrawing()" class="ml-1 bg-amber-700/60 hover:bg-amber-700 px-2 py-0.5 rounded-lg text-xs">Zrušit</button>
+        </div>
+    </div>
+
+    <!-- Kontejner pro MapLibre GL JS -->
+    <div id="map"></div>
+
+    <!-- Toast notifikace (náhrada za alert) -->
+    <div id="toast-container" class="fixed top-16 left-1/2 -translate-x-1/2 md:left-[calc(50%+200px)] z-50 flex flex-col gap-2 pointer-events-none w-11/12 max-w-sm"></div>
+
+    <!-- Hlavní ovládací panel (Sidebar na desktopu, Bottom Sheet na mobilu) -->
+    <aside id="control-panel" class="bg-white/95 backdrop-blur-md shadow-2xl flex flex-col">
+        
+        <!-- Úchyt pro vysunutí/zasunutí na mobilu + Hlavička -->
+        <div id="mobile-sheet-header" class="px-4 pt-2.5 pb-2 border-b border-slate-200/80 cursor-pointer md:cursor-default shrink-0" onclick="toggleMobileSheet(event)">
+            <!-- Táhlo pro mobil -->
+            <div class="w-10 h-1.5 bg-slate-300 rounded-full mx-auto mb-2 md:hidden"></div>
+            
+            <div class="flex items-center justify-between gap-2">
+                <div class="flex items-center gap-2.5 min-w-0">
+                    <div class="w-9 h-9 rounded-xl bg-brand-600 text-white flex items-center justify-center shadow-sm shrink-0">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+                    </div>
+                    <div class="truncate">
+                        <h1 class="text-sm sm:text-base font-bold text-slate-900 leading-tight truncate">Náhodný cíl na mapě</h1>
+                        <p id="active-area-subtitle" class="text-xs text-slate-500 truncate">Aktivní: Praha - centrum</p>
+                    </div>
+                </div>
+
+                <!-- Rychlé tlačítko generování v sbaleném stavu na mobilu + přepínač sbalení -->
+                <div class="flex items-center gap-1.5 shrink-0">
+                    <button onclick="event.stopPropagation(); generateRandomPoint();" title="Vygenerovat náhodné místo" class="md:hidden min-h-[40px] px-3 bg-brand-600 hover:bg-brand-700 active:scale-95 text-white text-xs font-semibold rounded-xl shadow flex items-center gap-1.5 transition">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                        <span>Losovat</span>
+                    </button>
+                    <button id="btn-toggle-sheet" class="md:hidden w-10 h-10 flex items-center justify-center rounded-xl bg-slate-100 text-slate-600 hover:bg-slate-200" aria-label="Sbalit nebo rozbalit panel">
+                        <svg id="chevron-icon" class="w-5 h-5 transition-transform duration-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Navigační záložky -->
+        <nav class="grid grid-cols-3 gap-1 p-2 bg-slate-100/80 border-b border-slate-200/80 shrink-0">
+            <button id="tab-btn-generator" onclick="switchTab('generator')" class="tab-btn min-h-[42px] rounded-xl text-xs sm:text-sm font-semibold transition flex items-center justify-center gap-1.5 bg-white text-brand-700 shadow-sm">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.828 14.828a4 4 0 01-5.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                <span>Generátor</span>
+            </button>
+            <button id="tab-btn-area" onclick="switchTab('area')" class="tab-btn min-h-[42px] rounded-xl text-xs sm:text-sm font-semibold transition flex items-center justify-center gap-1.5 text-slate-600 hover:text-slate-900">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"></path></svg>
+                <span>Oblast</span>
+            </button>
+            <button id="tab-btn-saved" onclick="switchTab('saved')" class="tab-btn min-h-[42px] rounded-xl text-xs sm:text-sm font-semibold transition flex items-center justify-center gap-1.5 text-slate-600 hover:text-slate-900">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z"></path></svg>
+                <span>Uložené</span>
+                <span id="saved-count-badge" class="bg-slate-200 text-slate-700 text-[10px] px-1.5 py-0.5 rounded-full">2</span>
+            </button>
+        </nav>
+
+        <!-- Obsah záložek -->
+        <div class="flex-1 overflow-y-auto custom-scroll p-4 space-y-4">
+
+            <!-- ================= ZÁLOŽKA 1: GENERÁTOR ================= -->
+            <section id="tab-generator" class="space-y-4">
+                <!-- Info karta aktivní oblasti -->
+                <div class="bg-slate-50 border border-slate-200/90 rounded-2xl p-3.5 flex items-center justify-between gap-2">
+                    <div class="min-w-0">
+                        <span class="text-[11px] font-semibold uppercase tracking-wider text-slate-400 block">Vybraná oblast</span>
+                        <h2 id="gen-area-name" class="text-sm font-bold text-slate-800 truncate">Praha - centrum</h2>
+                        <p id="gen-area-details" class="text-xs text-slate-500 mt-0.5 truncate">Obdélník • cca 18,4 km²</p>
+                    </div>
+                    <button onclick="fitActiveArea()" class="shrink-0 min-h-[40px] px-3 bg-white hover:bg-slate-100 border border-slate-200 rounded-xl text-xs font-medium text-slate-700 shadow-xs flex items-center gap-1 transition" title="Vycentrovat oblast na mapě">
+                        <svg class="w-4 h-4 text-brand-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"></path></svg>
+                        <span>Zobrazit</span>
+                    </button>
+                </div>
+
+                <!-- Hlavní akční tlačítko -->
+                <button onclick="generateRandomPoint()" class="w-full min-h-[52px] bg-brand-600 hover:bg-brand-700 active:scale-[0.99] text-white font-bold text-base rounded-2xl shadow-lg shadow-brand-600/25 flex items-center justify-center gap-2.5 transition">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"></path></svg>
+                    <span>Vygenerovat náhodné místo</span>
+                </button>
+
+                <!-- Výsledek generování -->
+                <div id="result-card" class="hidden bg-white border border-slate-200 rounded-2xl p-4 shadow-sm space-y-4">
+                    <div class="flex items-center justify-between border-b border-slate-100 pb-2.5">
+                        <span class="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-brand-700 bg-brand-50 px-2.5 py-1 rounded-lg">
+                            <span class="w-2 h-2 rounded-full bg-brand-600 animate-ping"></span>
+                            Vygenerovaný cíl
+                        </span>
+                        <button onclick="flyToGeneratedPoint()" class="text-xs font-medium text-slate-500 hover:text-brand-600 underline">
+                            Najít na mapě
+                        </button>
+                    </div>
+
+                    <!-- Souřadnice a kopírování -->
+                    <div class="bg-slate-50 rounded-xl p-3 flex items-center justify-between gap-2 border border-slate-200/70">
+                        <div>
+                            <div class="text-[11px] text-slate-400 font-medium">Souřadnice (Šířka, Délka)</div>
+                            <div id="result-coords-text" class="font-mono text-sm sm:text-base font-bold text-slate-800 select-all">50.087451, 14.420671</div>
+                        </div>
+                        <button onclick="copyCoordinates()" class="min-h-[42px] px-3 bg-white hover:bg-slate-100 active:scale-95 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 shadow-xs flex items-center gap-1.5 transition shrink-0">
+                            <svg class="w-4 h-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+                            <span>Kopírovat</span>
+                        </button>
+                    </div>
+
+                    <!-- Odkaz na Mapy.com -->
+                    <a id="result-mapy-link" href="#" target="_blank" rel="noopener noreferrer" class="w-full min-h-[48px] bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-900 font-semibold text-sm rounded-xl px-4 flex items-center justify-between transition group">
+                        <div class="flex items-center gap-2.5">
+                            <span class="w-7 h-7 rounded-lg bg-emerald-600 text-white flex items-center justify-center font-bold text-xs shadow-xs">M</span>
+                            <span>Otevřít v Mapy.com (Turistická)</span>
+                        </div>
+                        <svg class="w-4 h-4 text-emerald-700 group-hover:translate-x-0.5 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg>
+                    </a>
+
+                    <!-- QR kód sekce -->
+                    <div class="pt-2 flex flex-col items-center text-center bg-slate-50/70 rounded-xl p-3 border border-slate-100">
+                        <div class="bg-white p-2.5 rounded-xl shadow-xs border border-slate-200/80 mb-2">
+                            <canvas id="qr-canvas" class="block mx-auto"></canvas>
+                        </div>
+                        <p class="text-xs font-medium text-slate-600">Naskenujte QR kód telefonem</p>
+                        <p id="result-url-preview" class="text-[10px] text-slate-400 font-mono break-all mt-1 max-w-full px-2"></p>
+                    </div>
+                </div>
+
+                <!-- Prázdný stav před prvním losováním -->
+                <div id="result-placeholder" class="text-center py-6 px-4 bg-slate-50/80 rounded-2xl border border-dashed border-slate-300">
+                    <p class="text-sm text-slate-600 font-medium">Klikněte na tlačítko výše pro vylosování náhodného místa uvnitř vybrané oblasti.</p>
+                    <p class="text-xs text-slate-400 mt-1">Výpočet používá rovnoměrné sférické rozdělení bez zkreslení.</p>
+                </div>
+            </section>
+
+            <!-- ================= ZÁLOŽKA 2: OBLAST (DEFINICE) ================= -->
+            <section id="tab-area" class="hidden space-y-4">
+                
+                <!-- Výběr tvaru oblasti -->
+                <div>
+                    <label class="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">1. Typ oblasti</label>
+                    <div class="grid grid-cols-2 gap-2">
+                        <button id="shape-btn-rect" onclick="setAreaShape('rectangle')" class="min-h-[46px] rounded-xl border-2 border-brand-600 bg-brand-50/70 text-brand-800 font-semibold text-sm flex items-center justify-center gap-2 transition">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2" stroke-width="2"></rect></svg>
+                            <span>Obdélník</span>
+                        </button>
+                        <button id="shape-btn-circle" onclick="setAreaShape('circle')" class="min-h-[46px] rounded-xl border-2 border-slate-200 bg-white text-slate-600 hover:bg-slate-50 font-semibold text-sm flex items-center justify-center gap-2 transition">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" stroke-width="2"></circle></svg>
+                            <span>Kruh</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Interaktivní kreslení na mapě -->
+                <div class="bg-amber-50/80 border border-amber-200/80 rounded-2xl p-3.5 space-y-2.5">
+                    <div class="flex items-start gap-2.5">
+                        <svg class="w-5 h-5 text-amber-600 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 11.5V14m0-2.5v-6a1.5 1.5 0 113 0m-3 6a1.5 1.5 0 00-3 0v2a7.5 7.5 0 0015 0v-5a1.5 1.5 0 00-3 0m-6-3V11m0-5.5v-1a1.5 1.5 0 013 0v1m0 0V11m0-5.5a1.5 1.5 0 013 0v3m0 0V11"></path></svg>
+                        <div>
+                            <h3 class="text-xs font-bold text-amber-900">Interaktivní výběr na mapě</h3>
+                            <p id="draw-help-text" class="text-xs text-amber-800/80 mt-0.5">Klepněte na tlačítko níže a poté táhněte prstem nebo myší po mapě pro nakreslení obdélníku.</p>
+                        </div>
+                    </div>
+                    <button id="btn-start-draw" onclick="startDrawingMode()" class="w-full min-h-[44px] bg-amber-500 hover:bg-amber-600 active:scale-[0.99] text-white font-semibold text-sm rounded-xl shadow-xs flex items-center justify-center gap-2 transition">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
+                        <span>Nakreslit oblast na mapě</span>
+                    </button>
+                </div>
+
+                <!-- Formulář pro OBDÉLNÍK -->
+                <div id="form-rectangle" class="bg-slate-50 border border-slate-200 rounded-2xl p-3.5 space-y-3">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-bold text-slate-700">Souřadnice obdélníku (DD)</span>
+                        <button onclick="setRectFromViewport()" class="text-xs font-semibold text-brand-600 hover:text-brand-700 underline">
+                            Použít aktuální výřez mapy
+                        </button>
+                    </div>
+                    <div class="grid grid-cols-2 gap-2.5">
+                        <div>
+                            <label class="block text-[11px] font-medium text-slate-500 mb-1">Min. šířka (Jih Lat)</label>
+                            <input id="input-rect-minLat" type="number" step="any" class="w-full h-10 px-2.5 text-sm bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none" onchange="applyManualRect()">
+                        </div>
+                        <div>
+                            <label class="block text-[11px] font-medium text-slate-500 mb-1">Max. šířka (Sever Lat)</label>
+                            <input id="input-rect-maxLat" type="number" step="any" class="w-full h-10 px-2.5 text-sm bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none" onchange="applyManualRect()">
+                        </div>
+                        <div>
+                            <label class="block text-[11px] font-medium text-slate-500 mb-1">Min. délka (Západ Lon)</label>
+                            <input id="input-rect-minLon" type="number" step="any" class="w-full h-10 px-2.5 text-sm bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none" onchange="applyManualRect()">
+                        </div>
+                        <div>
+                            <label class="block text-[11px] font-medium text-slate-500 mb-1">Max. délka (Východ Lon)</label>
+                            <input id="input-rect-maxLon" type="number" step="any" class="w-full h-10 px-2.5 text-sm bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none" onchange="applyManualRect()">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Formulář pro KRUH -->
+                <div id="form-circle" class="hidden bg-slate-50 border border-slate-200 rounded-2xl p-3.5 space-y-3">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-bold text-slate-700">Parametry kruhu</span>
+                        <button onclick="setCircleCenterFromMapCenter()" class="text-xs font-semibold text-brand-600 hover:text-brand-700 underline">
+                            Střed z aktuální mapy
+                        </button>
+                    </div>
+                    <div class="grid grid-cols-2 gap-2.5">
+                        <div>
+                            <label class="block text-[11px] font-medium text-slate-500 mb-1">Střed Lat (Šířka)</label>
+                            <input id="input-circle-lat" type="number" step="any" class="w-full h-10 px-2.5 text-sm bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none" onchange="applyManualCircle()">
+                        </div>
+                        <div>
+                            <label class="block text-[11px] font-medium text-slate-500 mb-1">Střed Lon (Délka)</label>
+                            <input id="input-circle-lon" type="number" step="any" class="w-full h-10 px-2.5 text-sm bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none" onchange="applyManualCircle()">
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-500 mb-1">Poloměr kruhu</label>
+                        <div class="flex gap-2">
+                            <input id="input-circle-radius" type="number" min="1" step="any" value="5" class="flex-1 h-10 px-3 text-sm bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none" onchange="applyManualCircle()">
+                            <select id="input-circle-unit" class="h-10 px-3 text-sm font-medium bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-brand-500 outline-none" onchange="applyManualCircle()">
+                                <option value="km" selected>km</option>
+                                <option value="m">metry</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Uložení pojmenované oblasti -->
+                <div class="bg-white border border-slate-200 rounded-2xl p-3.5 space-y-2.5 shadow-xs">
+                    <label for="input-save-name" class="block text-xs font-bold text-slate-700">Uložit oblast pod názvem</label>
+                    <div class="flex gap-2">
+                        <input id="input-save-name" type="text" placeholder="Např. Kokořínsko, Okolí chaty..." class="flex-1 min-h-[44px] px-3 text-sm bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none">
+                        <button onclick="saveCurrentArea()" class="min-h-[44px] px-4 bg-slate-900 hover:bg-slate-800 active:scale-95 text-white text-sm font-semibold rounded-xl transition shrink-0">
+                            Uložit
+                        </button>
+                    </div>
+                </div>
+
+            </section>
+
+            <!-- ================= ZÁLOŽKA 3: ULOŽENÉ OBLASTI ================= -->
+            <section id="tab-saved" class="hidden space-y-4">
+                
+                <!-- Seznam uložených oblastí -->
+                <div id="saved-areas-list" class="space-y-2.5">
+                    <!-- Dynamicky generováno pomocí JS -->
+                </div>
+
+                <!-- Export a Import JSON -->
+                <div class="pt-3 border-t border-slate-200">
+                    <span class="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Záloha a přenos mezi zařízeními</span>
+                    <div class="grid grid-cols-2 gap-2">
+                        <button onclick="exportAreasJSON()" class="min-h-[42px] px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-xl flex items-center justify-center gap-1.5 transition">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                            <span>Export JSON</span>
+                        </button>
+                        <label class="min-h-[42px] px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-xl flex items-center justify-center gap-1.5 transition cursor-pointer">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
+                            <span>Import JSON</span>
+                            <input type="file" id="import-json-input" accept=".json,application/json" class="hidden" onchange="importAreasJSON(event)">
+                        </label>
+                    </div>
+                </div>
+
+            </section>
+
+        </div>
+    </aside>
+
+    <!-- Modální okno pro přejmenování oblasti (náhrada za prompt) -->
+    <div id="rename-modal" class="hidden fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-5 space-y-4">
+            <h3 class="text-base font-bold text-slate-900">Přejmenovat oblast</h3>
+            <input id="rename-modal-input" type="text" class="w-full h-11 px-3 text-sm border border-slate-300 rounded-xl focus:ring-2 focus:ring-brand-500 outline-none">
+            <div class="flex justify-end gap-2">
+                <button onclick="closeRenameModal()" class="min-h-[40px] px-4 rounded-xl text-sm font-medium text-slate-600 hover:bg-slate-100">Zrušit</button>
+                <button onclick="confirmRenameModal()" class="min-h-[40px] px-4 rounded-xl text-sm font-semibold bg-brand-600 hover:bg-brand-700 text-white">Uložit název</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        /**
+         * ============================================================================
+         * STAV APLIKACE A KONSTANTY
+         * ============================================================================
+         */
+        const STORAGE_KEY = 'mapy_random_areas_v1';
+        const EARTH_RADIUS_M = 6371008.8; // Střední poloměr Země v metrech (WGS84)
+
+        // Výchozí ukázkové oblasti při prvním spuštění
+        const DEFAULT_AREAS = [
+            {
+                id: 'default-praha',
+                name: 'Praha - centrum',
+                type: 'rectangle',
+                minLat: 50.0680,
+                maxLat: 50.1020,
+                minLon: 14.3950,
+                maxLon: 14.4550
+            },
+            {
+                id: 'default-sumava',
+                name: 'Šumava - okolí Kvildy',
+                type: 'circle',
+                centerLat: 49.0192,
+                centerLon: 13.5794,
+                radiusMeters: 4500 // 4.5 km
+            }
+        ];
+
+        // Globální stav
+        let state = {
+            savedAreas: [],
+            activeArea: null,       // Objekt aktuální oblasti (obdélník nebo kruh)
+            generatedPoint: null,   // { lat, lon }
+            isDrawing: false,
+            drawStartLngLat: null,
+            isMobileSheetMinimized: false,
+            renameTargetId: null
+        };
+
+        let map = null;
+        let targetMarker = null;
+        let qrInstance = null;
+
+        /**
+         * ============================================================================
+         * MATEMATICKÉ A GEODETICKÉ FUNKCE (SFÉRICKÁ TRIGONOMETRIE)
+         * ============================================================================
+         */
+        const toRad = (deg) => (deg * Math.PI) / 180;
+        const toDeg = (rad) => (rad * 180) / Math.PI;
+
+        /**
+         * Výpočet vzdálenosti dvou bodů na kouli (Haversine formule) v metrech
+         */
+        function haversineDistance(lat1, lon1, lat2, lon2) {
+            const dLat = toRad(lat2 - lat1);
+            const dLon = toRad(lon2 - lon1);
+            const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                      Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+                      Math.sin(dLon / 2) * Math.sin(dLon / 2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            return EARTH_RADIUS_M * c;
+        }
+
+        /**
+         * Výpočet cílového bodu na sféře ze startovního bodu, azimutu (rad) a vzdálenosti (m)
+         */
+        function destinationPoint(lat, lon, bearingRad, distanceMeters) {
+            const angDist = distanceMeters / EARTH_RADIUS_M;
+            const lat1 = toRad(lat);
+            const lon1 = toRad(lon);
+
+            const lat2 = Math.asin(
+                Math.sin(lat1) * Math.cos(angDist) +
+                Math.cos(lat1) * Math.sin(angDist) * Math.cos(bearingRad)
+            );
+
+            const lon2 = lon1 + Math.atan2(
+                Math.sin(bearingRad) * Math.sin(angDist) * Math.cos(lat1),
+                Math.cos(angDist) - Math.sin(lat1) * Math.sin(lat2)
+            );
+
+            // Normalizace zeměpisné délky do intervalu [-180, 180]
+            const normLon = ((toDeg(lon2) + 540) % 360) - 180;
+            return {
+                lat: toDeg(lat2),
+                lon: normLon
+            };
+        }
+
+        /**
+         * Vytvoří GeoJSON Polygon pro kruh pomocí přesných geodetických bodů
+         */
+        function createGeodesicCircleGeoJSON(centerLat, centerLon, radiusMeters, steps = 72) {
+            const coordinates = [];
+            for (let i = 0; i <= steps; i++) {
+                const bearing = (i / steps) * 2 * Math.PI;
+                const pt = destinationPoint(centerLat, centerLon, bearing, radiusMeters);
+                coordinates.push([pt.lon, pt.lat]);
+            }
+            return {
+                type: 'Feature',
+                geometry: {
+                    type: 'Polygon',
+                    coordinates: [coordinates]
+                }
+            };
+        }
+
+        /**
+         * Vytvoří GeoJSON Polygon pro obdélník
+         */
+        function createRectangleGeoJSON(minLat, maxLat, minLon, maxLon) {
+            return {
+                type: 'Feature',
+                geometry: {
+                    type: 'Polygon',
+                    coordinates: [[
+                        [minLon, minLat],
+                        [maxLon, minLat],
+                        [maxLon, maxLat],
+                        [minLon, maxLat],
+                        [minLon, minLat]
+                    ]]
+                }
+            };
+        }
+
+        /**
+         * Výpočet přibližné plochy oblasti v km² pro zobrazení uživateli
+         */
+        function calculateAreaKm2(area) {
+            if (area.type === 'circle') {
+                const rKm = area.radiusMeters / 1000;
+                return Math.PI * rKm * rKm;
+            } else {
+                const midLat = toRad((area.minLat + area.maxLat) / 2);
+                const heightM = haversineDistance(area.minLat, area.minLon, area.maxLat, area.minLon);
+                const widthM = haversineDistance((area.minLat + area.maxLat) / 2, area.minLon, (area.minLat + area.maxLat) / 2, area.maxLon);
+                return (heightM * widthM) / 1_000_000;
+            }
+        }
+
+        /**
+         * ============================================================================
+         * INICIALIZACE MAPY (MAPLIBRE GL JS)
+         * ============================================================================
+         */
+        function initMap() {
+            map = new maplibregl.Map({
+                container: 'map',
+                style: 'https://tiles.openfreemap.org/styles/bright',
+                center: [14.425, 50.085], // Praha / střed Čech
+                zoom: 11,
+                attributionControl: true
+            });
+
+            // Přidání ovládacích prvků navigace a měřítka
+            map.addControl(new maplibregl.NavigationControl({ showCompass: true }), 'top-right');
+            map.addControl(new maplibregl.ScaleControl({ maxWidth: 100, unit: 'metric' }), 'bottom-left');
+
+            // Geolocation tlačítko pro rychlé nalezení polohy uživatele
+            map.addControl(new maplibregl.GeolocateControl({
+                positionOptions: { enableHighAccuracy: true },
+                trackUserLocation: false
+            }), 'top-right');
+
+            map.on('load', () => {
+                // Zdroj a vrstvy pro vybranou oblast
+                map.addSource('selected-area', {
+                    type: 'geojson',
+                    data: { type: 'FeatureCollection', features: [] }
+                });
+
+                map.addLayer({
+                    id: 'selected-area-fill',
+                    type: 'fill',
+                    source: 'selected-area',
+                    paint: {
+                        'fill-color': '#16a34a',
+                        'fill-opacity': 0.18
+                    }
+                });
+
+                map.addLayer({
+                    id: 'selected-area-outline',
+                    type: 'line',
+                    source: 'selected-area',
+                    paint: {
+                        'line-color': '#15803d',
+                        'line-width': 2.5,
+                        'line-dasharray': [2, 1]
+                    }
+                });
+
+                // Zdroj pro střed kruhu (vizuální bod při kreslení/zobrazení kruhu)
+                map.addSource('circle-center', {
+                    type: 'geojson',
+                    data: { type: 'FeatureCollection', features: [] }
+                });
+
+                map.addLayer({
+                    id: 'circle-center-dot',
+                    type: 'circle',
+                    source: 'circle-center',
+                    paint: {
+                        'circle-radius': 5,
+                        'circle-color': '#15803d',
+                        'circle-stroke-width': 2,
+                        'circle-stroke-color': '#ffffff'
+                    }
+                });
+
+                // Vykreslení výchozí aktivní oblasti
+                updateAreaOnMap();
+                fitActiveArea(false);
+            });
+
+            setupDrawingEvents();
+        }
+
+        /**
+         * Přepínání mezi standardní OSM a turistickou OpenTopoMap vrstvou
+         */
+        function setBaseLayer(layerName) {
+            if (!map || !map.isStyleLoaded()) return;
+
+            const btnOsm = document.getElementById('btn-layer-osm');
+            const btnTopo = document.getElementById('btn-layer-topo');
+
+            if (layerName === 'osm') {
+                map.setLayoutProperty('layer-osm', 'visibility', 'visible');
+                map.setLayoutProperty('layer-topo', 'visibility', 'none');
+                btnOsm.className = 'px-3 py-1.5 text-xs font-semibold rounded-lg transition bg-brand-600 text-white shadow-sm';
+                btnTopo.className = 'px-3 py-1.5 text-xs font-semibold rounded-lg transition text-slate-600 hover:bg-slate-100';
+            } else {
+                map.setLayoutProperty('layer-osm', 'visibility', 'none');
+                map.setLayoutProperty('layer-topo', 'visibility', 'visible');
+                btnTopo.className = 'px-3 py-1.5 text-xs font-semibold rounded-lg transition bg-brand-600 text-white shadow-sm';
+                btnOsm.className = 'px-3 py-1.5 text-xs font-semibold rounded-lg transition text-slate-600 hover:bg-slate-100';
+            }
+        }
+
+        /**
+         * ============================================================================
+         * INTERAKTIVNÍ KRESLENÍ OBLASTI (MYŠ I DOTYK)
+         * ============================================================================
+         */
+        function startDrawingMode() {
+            state.isDrawing = true;
+            state.drawStartLngLat = null;
+            document.body.classList.add('drawing-mode');
+
+            // Zablokujeme posouvání mapy, aby tažení prstem/myší kreslilo tvar
+            map.dragPan.disable();
+
+            const banner = document.getElementById('draw-banner');
+            const bannerText = document.getElementById('draw-banner-text');
+            banner.classList.remove('hidden');
+
+            if (state.activeArea.type === 'rectangle') {
+                bannerText.textContent = 'Táhněte prstem nebo myší po mapě pro obdélník';
+            } else {
+                bannerText.textContent = 'Klepněte na střed kruhu a táhněte pro poloměr';
+            }
+
+            // Na mobilu automaticky sbalíme panel, aby byla vidět celá mapa
+            if (window.innerWidth < 768) {
+                setMobileSheetMinimized(true);
+            }
+        }
+
+        function cancelDrawing() {
+            state.isDrawing = false;
+            state.drawStartLngLat = null;
+            document.body.classList.remove('drawing-mode');
+            map.dragPan.enable();
+            document.getElementById('draw-banner').classList.add('hidden');
+        }
+
+        function setupDrawingEvents() {
+            const canvas = map.getCanvas();
+
+            // Helper pro získání LngLat z Mouse nebo Touch události
+            function getLngLatFromEvent(e) {
+                const rect = canvas.getBoundingClientRect();
+                let clientX, clientY;
+                if (e.touches && e.touches.length > 0) {
+                    clientX = e.touches[0].clientX;
+                    clientY = e.touches[0].clientY;
+                } else if (e.changedTouches && e.changedTouches.length > 0) {
+                    clientX = e.changedTouches[0].clientX;
+                    clientY = e.changedTouches[0].clientY;
+                } else {
+                    clientX = e.clientX;
+                    clientY = e.clientY;
+                }
+                return map.unproject([clientX - rect.left, clientY - rect.top]);
+            }
+
+            const onStart = (e) => {
+                if (!state.isDrawing) return;
+                // Ignorovat multidotyk (např. pinch-to-zoom)
+                if (e.touches && e.touches.length > 1) return;
+
+                e.preventDefault();
+                state.drawStartLngLat = getLngLatFromEvent(e);
+            };
+
+            const onMove = (e) => {
+                if (!state.isDrawing || !state.drawStartLngLat) return;
+                if (e.touches && e.touches.length > 1) return;
+
+                e.preventDefault();
+                const currentLngLat = getLngLatFromEvent(e);
+
+                if (state.activeArea.type === 'rectangle') {
+                    const minLat = Math.min(state.drawStartLngLat.lat, currentLngLat.lat);
+                    const maxLat = Math.max(state.drawStartLngLat.lat, currentLngLat.lat);
+                    const minLon = Math.min(state.drawStartLngLat.lng, currentLngLat.lng);
+                    const maxLon = Math.max(state.drawStartLngLat.lng, currentLngLat.lng);
+
+                    state.activeArea = {
+                        ...state.activeArea,
+                        name: 'Vlastní obdélník',
+                        type: 'rectangle',
+                        minLat, maxLat, minLon, maxLon
+                    };
+                } else {
+                    const dist = haversineDistance(
+                        state.drawStartLngLat.lat, state.drawStartLngLat.lng,
+                        currentLngLat.lat, currentLngLat.lng
+                    );
+                    state.activeArea = {
+                        ...state.activeArea,
+                        name: 'Vlastní kruh',
+                        type: 'circle',
+                        centerLat: state.drawStartLngLat.lat,
+                        centerLon: state.drawStartLngLat.lng,
+                        radiusMeters: Math.max(50, Math.round(dist))
+                    };
+                }
+
+                updateAreaOnMap();
+                syncAreaInputsFromState();
+            };
+
+            const onEnd = (e) => {
+                if (!state.isDrawing || !state.drawStartLngLat) return;
+                
+                const endLngLat = getLngLatFromEvent(e);
+                const dist = haversineDistance(
+                    state.drawStartLngLat.lat, state.drawStartLngLat.lng,
+                    endLngLat.lat, endLngLat.lng
+                );
+
+                // Pokud uživatel u kruhu jen klikl bez tažení, použijeme poloměr z formuláře
+                if (state.activeArea.type === 'circle' && dist < 20) {
+                    const inputRadius = parseFloat(document.getElementById('input-circle-radius').value) || 5;
+                    const unit = document.getElementById('input-circle-unit').value;
+                    const radiusMeters = unit === 'km' ? inputRadius * 1000 : inputRadius;
+
+                    state.activeArea = {
+                        ...state.activeArea,
+                        name: 'Vlastní kruh',
+                        type: 'circle',
+                        centerLat: state.drawStartLngLat.lat,
+                        centerLon: state.drawStartLngLat.lng,
+                        radiusMeters: Math.max(10, radiusMeters)
+                    };
+                    updateAreaOnMap();
+                    syncAreaInputsFromState();
+                }
+
+                cancelDrawing();
+                updateUIHeaders();
+                showToast('Oblast byla aktualizována na mapě.', 'success');
+
+                // Na mobilu opět vysuneme panel
+                if (window.innerWidth < 768) {
+                    setMobileSheetMinimized(false);
+                }
+            };
+
+            // Myš
+            canvas.addEventListener('mousedown', onStart);
+            window.addEventListener('mousemove', onMove);
+            window.addEventListener('mouseup', onEnd);
+
+            // Dotyková obrazovka
+            canvas.addEventListener('touchstart', onStart, { passive: false });
+            canvas.addEventListener('touchmove', onMove, { passive: false });
+            canvas.addEventListener('touchend', onEnd);
+        }
+
+        /**
+         * ============================================================================
+         * VYKRESLENÍ A AKTUALIZACE OBLASTI
+         * ============================================================================
+         */
+        function updateAreaOnMap() {
+            if (!map || !map.getSource('selected-area')) return;
+
+            const area = state.activeArea;
+            let geoJsonFeature;
+
+            if (area.type === 'rectangle') {
+                geoJsonFeature = createRectangleGeoJSON(area.minLat, area.maxLat, area.minLon, area.maxLon);
+                map.getSource('circle-center').setData({ type: 'FeatureCollection', features: [] });
+            } else {
+                geoJsonFeature = createGeodesicCircleGeoJSON(area.centerLat, area.centerLon, area.radiusMeters);
+                map.getSource('circle-center').setData({
+                    type: 'Feature',
+                    geometry: {
+                        type: 'Point',
+                        coordinates: [area.centerLon, area.centerLat]
+                    }
+                });
+            }
+
+            map.getSource('selected-area').setData(geoJsonFeature);
+            updateUIHeaders();
+        }
+
+        /**
+         * Přiblíží kameru mapy tak, aby celá aktivní oblast byla přehledně vidět
+         */
+        function fitActiveArea(animate = true) {
+            if (!map || !state.activeArea) return;
+            const area = state.activeArea;
+            let bounds;
+
+            if (area.type === 'rectangle') {
+                bounds = new maplibregl.LngLatBounds(
+                    [area.minLon, area.minLat],
+                    [area.maxLon, area.maxLat]
+                );
+            } else {
+                const north = destinationPoint(area.centerLat, area.centerLon, 0, area.radiusMeters);
+                const south = destinationPoint(area.centerLat, area.centerLon, Math.PI, area.radiusMeters);
+                const east = destinationPoint(area.centerLat, area.centerLon, Math.PI / 2, area.radiusMeters);
+                const west = destinationPoint(area.centerLat, area.centerLon, (3 * Math.PI) / 2, area.radiusMeters);
+                bounds = new maplibregl.LngLatBounds(
+                    [west.lon, south.lat],
+                    [east.lon, north.lat]
+                );
+            }
+
+            const padding = window.innerWidth < 768
+                ? { top: 70, bottom: 260, left: 30, right: 30 }
+                : { top: 60, bottom: 60, left: 60, right: 60 };
+
+            map.fitBounds(bounds, { padding, duration: animate ? 800 : 0, maxZoom: 15 });
+        }
+
+        /**
+         * Přepnutí tvaru oblasti v záložce Oblast
+         */
+        function setAreaShape(shape) {
+            const btnRect = document.getElementById('shape-btn-rect');
+            const btnCircle = document.getElementById('shape-btn-circle');
+            const formRect = document.getElementById('form-rectangle');
+            const formCircle = document.getElementById('form-circle');
+            const helpText = document.getElementById('draw-help-text');
+
+            if (shape === 'rectangle') {
+                btnRect.className = 'min-h-[46px] rounded-xl border-2 border-brand-600 bg-brand-50/70 text-brand-800 font-semibold text-sm flex items-center justify-center gap-2 transition';
+                btnCircle.className = 'min-h-[46px] rounded-xl border-2 border-slate-200 bg-white text-slate-600 hover:bg-slate-50 font-semibold text-sm flex items-center justify-center gap-2 transition';
+                formRect.classList.remove('hidden');
+                formCircle.classList.add('hidden');
+                helpText.textContent = 'Klepněte na tlačítko níže a poté táhněte prstem nebo myší po mapě pro nakreslení obdélníku.';
+
+                if (state.activeArea.type !== 'rectangle') {
+                    // Konverze z kruhu na obdélník kolem středu
+                    const cLat = state.activeArea.centerLat;
+                    const cLon = state.activeArea.centerLon;
+                    const r = state.activeArea.radiusMeters;
+                    const n = destinationPoint(cLat, cLon, 0, r).lat;
+                    const s = destinationPoint(cLat, cLon, Math.PI, r).lat;
+                    const e = destinationPoint(cLat, cLon, Math.PI / 2, r).lon;
+                    const w = destinationPoint(cLat, cLon, (3 * Math.PI) / 2, r).lon;
+
+                    state.activeArea = {
+                        name: 'Vlastní obdélník',
+                        type: 'rectangle',
+                        minLat: s, maxLat: n, minLon: w, maxLon: e
+                    };
+                }
+            } else {
+                btnCircle.className = 'min-h-[46px] rounded-xl border-2 border-brand-600 bg-brand-50/70 text-brand-800 font-semibold text-sm flex items-center justify-center gap-2 transition';
+                btnRect.className = 'min-h-[46px] rounded-xl border-2 border-slate-200 bg-white text-slate-600 hover:bg-slate-50 font-semibold text-sm flex items-center justify-center gap-2 transition';
+                formCircle.classList.remove('hidden');
+                formRect.classList.add('hidden');
+                helpText.textContent = 'Klepněte na tlačítko níže, poté klepněte na střed kruhu na mapě a táhněte pro určení poloměru.';
+
+                if (state.activeArea.type !== 'circle') {
+                    const cLat = (state.activeArea.minLat + state.activeArea.maxLat) / 2;
+                    const cLon = (state.activeArea.minLon + state.activeArea.maxLon) / 2;
+                    const r = Math.max(200, Math.round(haversineDistance(cLat, cLon, state.activeArea.maxLat, cLon)));
+
+                    state.activeArea = {
+                        name: 'Vlastní kruh',
+                        type: 'circle',
+                        centerLat: cLat,
+                        centerLon: cLon,
+                        radiusMeters: r
+                    };
+                }
+            }
+
+            syncAreaInputsFromState();
+            updateAreaOnMap();
+        }
+
+        function syncAreaInputsFromState() {
+            const area = state.activeArea;
+            if (!area) return;
+
+            if (area.type === 'rectangle') {
+                document.getElementById('input-rect-minLat').value = Number(area.minLat).toFixed(6);
+                document.getElementById('input-rect-maxLat').value = Number(area.maxLat).toFixed(6);
+                document.getElementById('input-rect-minLon').value = Number(area.minLon).toFixed(6);
+                document.getElementById('input-rect-maxLon').value = Number(area.maxLon).toFixed(6);
+            } else {
+                document.getElementById('input-circle-lat').value = Number(area.centerLat).toFixed(6);
+                document.getElementById('input-circle-lon').value = Number(area.centerLon).toFixed(6);
+                const unitEl = document.getElementById('input-circle-unit');
+                const valEl = document.getElementById('input-circle-radius');
+                if (area.radiusMeters >= 1000 && area.radiusMeters % 100 === 0) {
+                    unitEl.value = 'km';
+                    valEl.value = (area.radiusMeters / 1000).toFixed(2).replace(/\.00$/, '');
+                } else {
+                    unitEl.value = 'm';
+                    valEl.value = Math.round(area.radiusMeters);
+                }
+            }
+        }
+
+        function applyManualRect() {
+            const minLat = parseFloat(document.getElementById('input-rect-minLat').value);
+            const maxLat = parseFloat(document.getElementById('input-rect-maxLat').value);
+            const minLon = parseFloat(document.getElementById('input-rect-minLon').value);
+            const maxLon = parseFloat(document.getElementById('input-rect-maxLon').value);
+
+            if ([minLat, maxLat, minLon, maxLon].some(isNaN)) return;
+            if (minLat < -90 || maxLat > 90 || minLon < -180 || maxLon > 180) {
+                showToast('Neplatný rozsah souřadnic.', 'error');
+                return;
+            }
+
+            state.activeArea = {
+                name: 'Upravený obdélník',
+                type: 'rectangle',
+                minLat: Math.min(minLat, maxLat),
+                maxLat: Math.max(minLat, maxLat),
+                minLon: Math.min(minLon, maxLon),
+                maxLon: Math.max(minLon, maxLon)
+            };
+
+            updateAreaOnMap();
+            fitActiveArea();
+        }
+
+        function applyManualCircle() {
+            const lat = parseFloat(document.getElementById('input-circle-lat').value);
+            const lon = parseFloat(document.getElementById('input-circle-lon').value);
+            const rawRadius = parseFloat(document.getElementById('input-circle-radius').value);
+            const unit = document.getElementById('input-circle-unit').value;
+
+            if ([lat, lon, rawRadius].some(isNaN) || rawRadius <= 0) return;
+            if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+                showToast('Neplatné souřadnice středu.', 'error');
+                return;
+            }
+
+            const radiusMeters = unit === 'km' ? rawRadius * 1000 : rawRadius;
+
+            state.activeArea = {
+                name: 'Upravený kruh',
+                type: 'circle',
+                centerLat: lat,
+                centerLon: lon,
+                radiusMeters: Math.min(radiusMeters, 5000000) // Max 5000 km
+            };
+
+            updateAreaOnMap();
+            fitActiveArea();
+        }
+
+        function setRectFromViewport() {
+            const bounds = map.getBounds();
+            // Mírné zmenšení (o 10 %), aby obdélník nebyl nalepený na okrajích obrazovky
+            const latSpan = bounds.getNorth() - bounds.getSouth();
+            const lonSpan = bounds.getEast() - bounds.getWest();
+
+            state.activeArea = {
+                name: 'Výřez mapy',
+                type: 'rectangle',
+                minLat: bounds.getSouth() + latSpan * 0.12,
+                maxLat: bounds.getNorth() - latSpan * 0.12,
+                minLon: bounds.getWest() + lonSpan * 0.12,
+                maxLon: bounds.getEast() - lonSpan * 0.12
+            };
+            syncAreaInputsFromState();
+            updateAreaOnMap();
+            showToast('Obdélník nastaven podle aktuální mapy.', 'success');
+        }
+
+        function setCircleCenterFromMapCenter() {
+            const center = map.getCenter();
+            const rawRadius = parseFloat(document.getElementById('input-circle-radius').value) || 5;
+            const unit = document.getElementById('input-circle-unit').value;
+            const radiusMeters = unit === 'km' ? rawRadius * 1000 : rawRadius;
+
+            state.activeArea = {
+                name: 'Kruh ve středu mapy',
+                type: 'circle',
+                centerLat: center.lat,
+                centerLon: center.lng,
+                radiusMeters
+            };
+            syncAreaInputsFromState();
+            updateAreaOnMap();
+            showToast('Střed kruhu umístěn do středu mapy.', 'success');
+        }
+
+        /**
+         * ============================================================================
+         * ROVNOMĚRNÉ GENEROVÁNÍ NÁHODNÝCH SOUŘADNIC NA SFÉŘE
+         * ============================================================================
+         */
+        function generateRandomPoint() {
+            const area = state.activeArea;
+            if (!area) return;
+
+            let lat, lon;
+
+            if (area.type === 'rectangle') {
+                // Rovnoměrné rozdělení na sférickém obdélníku:
+                // lon ~ U(minLon, maxLon)
+                // lat = arcsin( U(sin(minLat), sin(maxLat)) )
+                const u1 = Math.random();
+                const u2 = Math.random();
+
+                lon = area.minLon + u1 * (area.maxLon - area.minLon);
+
+                const sinMin = Math.sin(toRad(area.minLat));
+                const sinMax = Math.sin(toRad(area.maxLat));
+                const sinLat = sinMin + u2 * (sinMax - sinMin);
+                lat = toDeg(Math.asin(Math.max(-1, Math.min(1, sinLat))));
+            } else {
+                // Rovnoměrné rozdělení na ploše kruhu na sféře:
+                // theta ~ U(0, 2*PI)
+                // r = R * sqrt(U(0, 1))
+                const theta = Math.random() * 2 * Math.PI;
+                const distance = area.radiusMeters * Math.sqrt(Math.random());
+                const pt = destinationPoint(area.centerLat, area.centerLon, theta, distance);
+                lat = pt.lat;
+                lon = pt.lon;
+            }
+
+            state.generatedPoint = { lat, lon };
+            displayGeneratedPoint();
+
+            // Přepneme na záložku Generátor, pokud uživatel losoval z jiné záložky
+            switchTab('generator');
+        }
+
+        function displayGeneratedPoint() {
+            const pt = state.generatedPoint;
+            if (!pt) return;
+
+            const latStr = pt.lat.toFixed(6);
+            const lonStr = pt.lon.toFixed(6);
+
+            // Přesný formát URL pro Mapy.com: center={lon},{lat}
+            const mapyUrl = `https://mapy.com/fnc/v1/showmap?mapset=outdoor&center=${lonStr},${latStr}&marker=true`;
+
+            // Aktualizace UI karty výsledku
+            document.getElementById('result-placeholder').classList.add('hidden');
+            document.getElementById('result-card').classList.remove('hidden');
+
+            document.getElementById('result-coords-text').textContent = `${latStr}, ${lonStr}`;
+            const linkEl = document.getElementById('result-mapy-link');
+            linkEl.href = mapyUrl;
+            document.getElementById('result-url-preview').textContent = mapyUrl;
+
+            // Vygenerování QR kódu pomocí QRious
+            if (!qrInstance) {
+                qrInstance = new QRious({
+                    element: document.getElementById('qr-canvas'),
+                    size: 168,
+                    level: 'M',
+                    foreground: '#0f172a',
+                    background: '#ffffff'
+                });
+            }
+            qrInstance.value = mapyUrl;
+
+            // Vykreslení nebo přesun markeru na mapě
+            if (!targetMarker) {
+                const el = document.createElement('div');
+                el.className = 'target-marker';
+                el.innerHTML = `
+                    <div class="target-pulse"></div>
+                    <svg class="w-9 h-9 text-red-600 drop-shadow-md" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/>
+                    </svg>
+                `;
+                targetMarker = new maplibregl.Marker({ element: el, anchor: 'bottom' })
+                    .setLngLat([pt.lon, pt.lat])
+                    .addTo(map);
+            } else {
+                // Restart animace špendlíku
+                const el = targetMarker.getElement();
+                el.style.animation = 'none';
+                el.offsetHeight; // trigger reflow
+                el.style.animation = null;
+                targetMarker.setLngLat([pt.lon, pt.lat]);
+            }
+
+            // Plynulý přesun kamery, pokud je bod mimo aktuální zorné pole nebo je zoom příliš malý
+            const currentBounds = map.getBounds();
+            if (!currentBounds.contains([pt.lon, pt.lat]) || map.getZoom() < 9) {
+                flyToGeneratedPoint();
+            }
+        }
+
+        function flyToGeneratedPoint() {
+            if (!state.generatedPoint || !map) return;
+            map.flyTo({
+                center: [state.generatedPoint.lon, state.generatedPoint.lat],
+                zoom: Math.max(map.getZoom(), 13),
+                speed: 1.4,
+                essential: true
+            });
+        }
+
+        /**
+         * Bezpečné zkopírování souřadnic do schránky (včetně fallbacku pro iframe)
+         */
+        function copyCoordinates() {
+            if (!state.generatedPoint) return;
+            const text = `${state.generatedPoint.lat.toFixed(6)}, ${state.generatedPoint.lon.toFixed(6)}`;
+
+            const textArea = document.createElement('textarea');
+            textArea.value = text;
+            textArea.style.position = 'fixed';
+            textArea.style.left = '-9999px';
+            document.body.appendChild(textArea);
+            textArea.focus();
+            textArea.select();
+
+            try {
+                document.execCommand('copy');
+                showToast(`Zkopírováno: ${text}`, 'success');
+            } catch (err) {
+                showToast('Kopírování se nezdařilo.', 'error');
+            }
+            document.body.removeChild(textArea);
+        }
+
+        /**
+         * ============================================================================
+         * SPRÁVA ULOŽENÝCH OBLASTÍ (LOCALSTORAGE + JSON EXPORT/IMPORT)
+         * ============================================================================
+         */
+        function loadSavedAreas() {
+            try {
+                const raw = localStorage.getItem(STORAGE_KEY);
+                if (raw) {
+                    const parsed = JSON.parse(raw);
+                    if (Array.isArray(parsed) && parsed.length > 0) {
+                        state.savedAreas = parsed;
+                    } else {
+                        state.savedAreas = [...DEFAULT_AREAS];
+                    }
+                } else {
+                    state.savedAreas = [...DEFAULT_AREAS];
+                    persistSavedAreas();
+                }
+            } catch (e) {
+                state.savedAreas = [...DEFAULT_AREAS];
+            }
+
+            state.activeArea = { ...state.savedAreas[0] };
+            renderSavedAreasList();
+            syncAreaInputsFromState();
+            updateUIHeaders();
+        }
+
+        function persistSavedAreas() {
+            try {
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(state.savedAreas));
+            } catch (e) {
+                showToast('Nepodařilo se uložit data do prohlížeče.', 'error');
+            }
+            renderSavedAreasList();
+        }
+
+        function saveCurrentArea() {
+            const nameInput = document.getElementById('input-save-name');
+            const name = nameInput.value.trim();
+
+            if (!name) {
+                showToast('Zadejte prosím název oblasti.', 'error');
+                nameInput.focus();
+                return;
+            }
+
+            const newArea = {
+                ...state.activeArea,
+                id: 'area-' + Date.now(),
+                name: name
+            };
+
+            state.savedAreas.unshift(newArea);
+            state.activeArea = { ...newArea };
+            nameInput.value = '';
+
+            persistSavedAreas();
+            updateUIHeaders();
+            showToast(`Oblast "${name}" byla uložena.`, 'success');
+            switchTab('saved');
+        }
+
+        function selectSavedArea(id) {
+            const found = state.savedAreas.find(a => a.id === id);
+            if (!found) return;
+
+            state.activeArea = { ...found };
+
+            // Aktualizace přepínače tvaru na záložce Oblast
+            if (found.type === 'rectangle') {
+                setAreaShape('rectangle');
+            } else {
+                setAreaShape('circle');
+            }
+            // Obnovíme přesné hodnoty uložené oblasti (setAreaShape by mohl přepočítat)
+            state.activeArea = { ...found };
+            syncAreaInputsFromState();
+            updateAreaOnMap();
+            fitActiveArea();
+            showToast(`Vybrána oblast: ${found.name}`, 'info');
+            switchTab('generator');
+        }
+
+        function deleteSavedArea(id) {
+            if (state.savedAreas.length <= 1) {
+                showToast('Musí zůstat alespoň jedna uložená oblast.', 'error');
+                return;
+            }
+            state.savedAreas = state.savedAreas.filter(a => a.id !== id);
+            persistSavedAreas();
+            showToast('Oblast byla odstraněna.', 'info');
+        }
+
+        // Modální okno pro přejmenování
+        function openRenameModal(id) {
+            const found = state.savedAreas.find(a => a.id === id);
+            if (!found) return;
+            state.renameTargetId = id;
+            const input = document.getElementById('rename-modal-input');
+            input.value = found.name;
+            document.getElementById('rename-modal').classList.remove('hidden');
+            setTimeout(() => input.focus(), 50);
+        }
+
+        function closeRenameModal() {
+            state.renameTargetId = null;
+            document.getElementById('rename-modal').classList.add('hidden');
+        }
+
+        function confirmRenameModal() {
+            const newName = document.getElementById('rename-modal-input').value.trim();
+            if (!newName || !state.renameTargetId) return;
+
+            const idx = state.savedAreas.findIndex(a => a.id === state.renameTargetId);
+            if (idx !== -1) {
+                state.savedAreas[idx].name = newName;
+                if (state.activeArea && state.activeArea.id === state.renameTargetId) {
+                    state.activeArea.name = newName;
+                    updateUIHeaders();
+                }
+                persistSavedAreas();
+                showToast('Oblast byla přejmenována.', 'success');
+            }
+            closeRenameModal();
+        }
+
+        function renderSavedAreasList() {
+            const container = document.getElementById('saved-areas-list');
+            const badge = document.getElementById('saved-count-badge');
+            badge.textContent = state.savedAreas.length;
+
+            container.innerHTML = '';
+
+            state.savedAreas.forEach(area => {
+                const isSelected = state.activeArea && state.activeArea.id === area.id;
+                const areaKm2 = calculateAreaKm2(area);
+                const subtitle = area.type === 'rectangle'
+                    ? `Obdélník • ${areaKm2.toFixed(1)} km²`
+                    : `Kruh (r = ${(area.radiusMeters / 1000).toFixed(2)} km) • ${areaKm2.toFixed(1)} km²`;
+
+                const card = document.createElement('div');
+                card.className = `p-3 rounded-2xl border transition flex items-center justify-between gap-2 ${
+                    isSelected
+                        ? 'bg-brand-50/70 border-brand-500 shadow-xs'
+                        : 'bg-white border-slate-200 hover:border-slate-300'
+                }`;
+
+                card.innerHTML = `
+                    <button onclick="selectSavedArea('${area.id}')" class="flex-1 text-left min-w-0 py-1">
+                        <div class="flex items-center gap-1.5">
+                            <span class="font-bold text-sm text-slate-800 truncate">${escapeHtml(area.name)}</span>
+                            ${isSelected ? '<span class="text-[10px] font-bold bg-brand-600 text-white px-1.5 py-0.5 rounded-md shrink-0">Aktivní</span>' : ''}
+                        </div>
+                        <div class="text-xs text-slate-500 mt-0.5">${subtitle}</div>
+                    </button>
+                    <div class="flex items-center gap-1 shrink-0">
+                        <button onclick="openRenameModal('${area.id}')" title="Přejmenovat" class="w-9 h-9 rounded-xl text-slate-500 hover:text-slate-800 hover:bg-slate-100 flex items-center justify-center transition">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
+                        </button>
+                        <button onclick="deleteSavedArea('${area.id}')" title="Smazat" class="w-9 h-9 rounded-xl text-slate-400 hover:text-red-600 hover:bg-red-50 flex items-center justify-center transition">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                        </button>
+                    </div>
+                `;
+                container.appendChild(card);
+            });
+        }
+
+        function exportAreasJSON() {
+            const dataStr = JSON.stringify(state.savedAreas, null, 2);
+            const blob = new Blob([dataStr], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `mapy-oblasti-${new Date().toISOString().slice(0, 10)}.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            showToast('Soubor JSON byl stažen.', 'success');
+        }
+
+        function importAreasJSON(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    const imported = JSON.parse(e.target.result);
+                    if (!Array.isArray(imported)) throw new Error('Neplatný formát');
+
+                    let addedCount = 0;
+                    imported.forEach(item => {
+                        if (item.name && (item.type === 'rectangle' || item.type === 'circle')) {
+                            state.savedAreas.push({
+                                ...item,
+                                id: 'imp-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6)
+                            });
+                            addedCount++;
+                        }
+                    });
+
+                    if (addedCount > 0) {
+                        persistSavedAreas();
+                        showToast(`Importováno ${addedCount} oblastí.`, 'success');
+                    } else {
+                        showToast('V souboru nebyly nalezeny platné oblasti.', 'error');
+                    }
+                } catch (err) {
+                    showToast('Chyba při čtení JSON souboru.', 'error');
+                }
+                event.target.value = '';
+            };
+            reader.readAsText(file);
+        }
+
+        /**
+         * ============================================================================
+         * UI NAVIGACE, ZÁLOŽKY A MOBILNÍ BOTTOM SHEET
+         * ============================================================================
+         */
+        function switchTab(tabName) {
+            const tabs = ['generator', 'area', 'saved'];
+            tabs.forEach(t => {
+                const section = document.getElementById(`tab-${t}`);
+                const btn = document.getElementById(`tab-btn-${t}`);
+                if (t === tabName) {
+                    section.classList.remove('hidden');
+                    btn.className = 'tab-btn min-h-[42px] rounded-xl text-xs sm:text-sm font-semibold transition flex items-center justify-center gap-1.5 bg-white text-brand-700 shadow-sm';
+                } else {
+                    section.classList.add('hidden');
+                    btn.className = 'tab-btn min-h-[42px] rounded-xl text-xs sm:text-sm font-semibold transition flex items-center justify-center gap-1.5 text-slate-600 hover:text-slate-900';
+                }
+            });
+
+            // Při přepnutí záložky na mobilu zajistíme rozbalení panelu
+            if (window.innerWidth < 768 && state.isMobileSheetMinimized) {
+                setMobileSheetMinimized(false);
+            }
+        }
+
+        function toggleMobileSheet(event) {
+            if (window.innerWidth >= 768) return;
+            setMobileSheetMinimized(!state.isMobileSheetMinimized);
+        }
+
+        function setMobileSheetMinimized(minimized) {
+            state.isMobileSheetMinimized = minimized;
+            const panel = document.getElementById('control-panel');
+            const chevron = document.getElementById('chevron-icon');
+            if (minimized) {
+                panel.classList.add('minimized');
+                chevron.style.transform = 'rotate(180deg)';
+            } else {
+                panel.classList.remove('minimized');
+                chevron.style.transform = 'rotate(0deg)';
+            }
+        }
+
+        function updateUIHeaders() {
+            const area = state.activeArea;
+            if (!area) return;
+
+            const areaKm2 = calculateAreaKm2(area);
+            const detailsText = area.type === 'rectangle'
+                ? `Obdélník • cca ${areaKm2 < 1 ? (areaKm2 * 100).toFixed(1) + ' ha' : areaKm2.toFixed(1) + ' km²'}`
+                : `Kruh (r = ${area.radiusMeters >= 1000 ? (area.radiusMeters / 1000).toFixed(2) + ' km' : area.radiusMeters + ' m'}) • cca ${areaKm2 < 1 ? (areaKm2 * 100).toFixed(1) + ' ha' : areaKm2.toFixed(1) + ' km²'}`;
+
+            document.getElementById('active-area-subtitle').textContent = `Aktivní: ${area.name}`;
+            document.getElementById('gen-area-name').textContent = area.name;
+            document.getElementById('gen-area-details').textContent = detailsText;
+            renderSavedAreasList();
+        }
+
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+
+            const colors = {
+                success: 'bg-slate-900 text-white border-brand-500',
+                error: 'bg-red-600 text-white border-red-400',
+                info: 'bg-slate-800 text-white border-slate-600'
+            };
+
+            toast.className = `px-4 py-2.5 rounded-xl shadow-lg border-l-4 text-xs sm:text-sm font-medium transition-all duration-300 transform translate-y-0 opacity-100 text-center ${colors[type] || colors.info}`;
+            toast.textContent = message;
+
+            container.appendChild(toast);
+            setTimeout(() => {
+                toast.classList.add('opacity-0', '-translate-y-2');
+                setTimeout(() => toast.remove(), 300);
+            }, 2800);
+        }
+
+        function escapeHtml(str) {
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
+
+        // Inicializace po načtení okna
+        window.addEventListener('DOMContentLoaded', () => {
+            loadSavedAreas();
+            initMap();
+        });
+    </script>
+</body>
+</html>
