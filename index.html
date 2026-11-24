@@ -1025,6 +1025,28 @@ nebo GeoJSON / WKT POLYGON((14.41 50.08, ...))' class="w-full flex-1 min-h-[140p
                 attributionControl: true
             });
 
+            map.on('style.load', () => {
+                const lang = 'cs'; // Kód jazyka (např. 'cs', 'sk', 'de', 'en')
+                const layers = map.getStyle().layers;
+
+                layers.forEach((layer) => {
+                    // Hledáme pouze textové vrstvy, které nepoužívají atribut 'ref' (čísla silnic)
+                    if (
+                    layer.type === 'symbol' &&
+                    layer.layout &&
+                    layer.layout['text-field'] &&
+                    !layer.id.includes('shield')
+                    ) {
+                    map.setLayoutProperty(layer.id, 'text-field', [
+                        'coalesce',
+                        ['get', `name:${lang}`], // OpenFreeMap / OpenMapTiles používá dvojtečku (name:cs)
+                        ['get', 'name:latin'],   // Záložní přepis do latinky
+                        ['get', 'name']          // Výchozí lokální název
+                    ]);
+                    }
+                });
+            });
+
             map.addControl(new maplibregl.NavigationControl({ showCompass: true }), 'top-right');
             map.addControl(new maplibregl.ScaleControl({ maxWidth: 100, unit: 'metric' }), 'bottom-left');
             map.addControl(new maplibregl.GeolocateControl({
